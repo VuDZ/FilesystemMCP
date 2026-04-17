@@ -25,7 +25,7 @@ internal sealed class ReadFileTool : IMcpTool
     }
 
     public string Name => "read_file";
-    public string Description => "Reads a file's content. Returns the text and its hash. Binary files are rejected.";
+    public string Description => "Reads a file's content. Returns the text and a 'hash'. Always use this tool BEFORE patching a file to get the current state and the required 'hash' for replace_in_file. Binary files are rejected.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments)

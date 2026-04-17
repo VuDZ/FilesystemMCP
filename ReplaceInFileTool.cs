@@ -27,7 +27,7 @@ internal sealed class ReplaceInFileTool : IMcpTool
     }
 
     public string Name => "replace_in_file";
-    public string Description => "Replaces a specific snippet of code in a file. Requires exact string match and the file's current hash for optimistic locking.";
+    public string Description => "Replaces a specific snippet of code in a file. CRITICAL: You MUST provide the 'original_hash' exactly as returned by your last 'read_file' call. If you do not have the current hash, you MUST call 'read_file' first to get it.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments)
