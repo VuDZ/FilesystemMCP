@@ -9,7 +9,7 @@ internal static class Program
     {
         if (args.Length < 1)
         {
-            await Console.Error.WriteLineAsync("WorkspaceRoot argument is required.");
+            McpLogger.LogError("WorkspaceRoot argument is required.");
             return 1;
         }
 
@@ -20,7 +20,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"Invalid WorkspaceRoot: {ex.Message}");
+            McpLogger.LogError("Invalid WorkspaceRoot", ex);
             return 1;
         }
 
@@ -56,7 +56,7 @@ internal static class Program
             }
             catch (Exception ex)
             {
-                await Console.Error.WriteLineAsync(ex.ToString());
+                McpLogger.LogError("Request processing failed", ex);
                 var code = ex is JsonException ? -32700 : -32603;
                 var message = ex is JsonException ? "Parse error" : "Internal error";
                 response = CreateErrorResponse(
@@ -140,13 +140,21 @@ internal static class Program
             ? EmptyObject()
             : parameters.Arguments.Value;
 
-        var toolResult = await toolRegistry.ExecuteToolAsync(parameters.Name, arguments);
-        var result = new ToolsCallResult(
-            Content: new[] { new ToolCallContent("text", toolResult) },
-            IsError: false);
+        try
+        {
+            var toolResult = await toolRegistry.ExecuteToolAsync(parameters.Name, arguments);
+            var result = new ToolsCallResult(
+                Content: new[] { new ToolCallContent("text", toolResult) },
+                IsError: false);
 
-        var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult);
-        return CreateResultResponse(request.Id, payload);
+            var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult);
+            return CreateResultResponse(request.Id, payload);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogError("Tool execution failed", ex);
+            return CreateErrorResponse(request.Id, -32603, "Internal error");
+        }
     }
 
     private static async Task<JsonRpcResponse> HandleReadFileAsync(JsonRpcRequest request, FileService fileService)
