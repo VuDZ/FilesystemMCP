@@ -28,6 +28,7 @@ internal static class Program
         var mutationService = new MutationService(workspaceRoot);
         var toolRegistry = new ToolRegistry();
         toolRegistry.Register(new ReadFileTool(fileService));
+        toolRegistry.Register(new ReplaceInFileTool(fileService));
 
         while (true)
         {

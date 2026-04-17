@@ -83,6 +83,11 @@ internal sealed record ReplaceInFileResult(
     [property: JsonPropertyName("md5")] string Md5,
     [property: JsonPropertyName("sha256")] string Sha256);
 
+internal sealed record ReplaceInFileToolResult(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("new_hash")] string NewHash,
+    [property: JsonPropertyName("snippet")] string Snippet);
+
 internal sealed record WriteResult(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("status")] string Status);
@@ -123,6 +128,7 @@ internal sealed record ToolsCallResult(
 [JsonSerializable(typeof(SearchResult))]
 [JsonSerializable(typeof(CreateFileResult))]
 [JsonSerializable(typeof(ReplaceInFileResult))]
+[JsonSerializable(typeof(ReplaceInFileToolResult))]
 [JsonSerializable(typeof(WriteResult))]
 [JsonSerializable(typeof(ToolDefinition))]
 [JsonSerializable(typeof(ToolsListResult))]

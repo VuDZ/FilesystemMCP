@@ -64,6 +64,84 @@ internal sealed class FileService
         return new ReadFileResult(resolvedPath, text, md5, sha256);
     }
 
+    public async Task<(string NewText, string NewHash)> ReplaceInFileAsync(
+        string path,
+        string targetSnippet,
+        string replacementSnippet,
+        string originalHash,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("Path must be provided.", nameof(path));
+        }
+
+        if (string.IsNullOrEmpty(targetSnippet))
+        {
+            throw new ArgumentException("targetSnippet cannot be empty.", nameof(targetSnippet));
+        }
+
+        if (string.IsNullOrWhiteSpace(originalHash))
+        {
+            throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
+        }
+
+        var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        string currentContent;
+
+        await using (var stream = new FileStream(
+                         resolvedPath,
+                         new FileStreamOptions
+                         {
+                             Access = FileAccess.Read,
+                             Mode = FileMode.Open,
+                             Share = FileShare.ReadWrite,
+                             Options = FileOptions.SequentialScan
+                         }))
+        using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+        {
+            currentContent = await reader.ReadToEndAsync(cancellationToken);
+        }
+
+        var (currentMd5, currentSha256) = ComputeHashes(currentContent);
+        if (!string.Equals(originalHash, currentMd5, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(originalHash, currentSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "File modified externally. Please use read_file to get the latest state before patching.");
+        }
+
+        var normalizedFile = NormalizeLineEndings(currentContent);
+        var normalizedTarget = NormalizeLineEndings(targetSnippet);
+        var normalizedReplacement = NormalizeLineEndings(replacementSnippet);
+
+        var targetIndex = normalizedFile.IndexOf(normalizedTarget, StringComparison.Ordinal);
+        if (targetIndex < 0)
+        {
+            throw new ArgumentException("Target snippet not found in the file. Ensure you copied the exact code block.");
+        }
+
+        var updatedText = ReplaceFirst(normalizedFile, normalizedTarget, normalizedReplacement, targetIndex);
+
+        await using (var stream = new FileStream(
+                         resolvedPath,
+                         new FileStreamOptions
+                         {
+                             Access = FileAccess.Write,
+                             Mode = FileMode.Create,
+                             Share = FileShare.ReadWrite,
+                             Options = FileOptions.SequentialScan
+                         }))
+        await using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+        {
+            await writer.WriteAsync(updatedText.AsMemory(), cancellationToken);
+            await writer.FlushAsync(cancellationToken);
+        }
+
+        var (_, newSha256) = ComputeHashes(updatedText);
+        return (updatedText, newSha256);
+    }
+
     private static void ValidateLineRange(int? startLine, int? endLine)
     {
         if (!startLine.HasValue && !endLine.HasValue)
@@ -141,5 +219,18 @@ internal sealed class FileService
         var sha256Bytes = SHA256.HashData(bytes);
 
         return (Convert.ToHexString(md5Bytes), Convert.ToHexString(sha256Bytes));
+    }
+
+    private static string NormalizeLineEndings(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+    private static string ReplaceFirst(string source, string target, string replacement, int index)
+    {
+        var builder = new StringBuilder(source.Length - target.Length + replacement.Length);
+        builder.Append(source, 0, index);
+        builder.Append(replacement);
+        builder.Append(source, index + target.Length, source.Length - index - target.Length);
+        return builder.ToString();
     }
 }
