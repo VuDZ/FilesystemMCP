@@ -11,4 +11,9 @@
     <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Legacy file guard: protocol context is defined in McpProtocol.cs -->
+    <Compile Remove="McpJsonContext.cs" />
+  </ItemGroup>
 </Project>

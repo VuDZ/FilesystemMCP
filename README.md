@@ -34,6 +34,17 @@ Add the compiled executable to your MCP client settings.
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
 
+### Agent & OpenCode Templates
+
+- `AGENTS.md.sample` - starter prompt/rules for autonomous agents working through this MCP server.
+- `opencode.json.sample` - sample OpenCode MCP config for running `FilesystemMCP` as a local server.
+
+When using templates:
+- Copy `AGENTS.md.sample` to `AGENTS.md` and adapt rules to your workflow.
+- Copy `opencode.json.sample` to your OpenCode config and set:
+  - `command[0]` -> path to built `FilesystemMCP.exe`
+  - `command[1]` -> target workspace root path
+
 ### MCP Tools
 
 #### `list_directory`
@@ -93,17 +104,6 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 </details>
 
-#### `append_to_file`
-Appends text to the end of an existing file. Useful for adding new functions without reading the entire file.
-
-<details>
-<summary>Parameters</summary>
-
-- `path` (string, required) - Relative path inside the `WorkspaceRoot`.
-- `content` (string, required) - Content to append.
-
-</details>
-
 ---
 
 ## Русская версия
@@ -135,6 +135,17 @@ dotnet publish -c Release
 - **Type:** `command`
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
+
+### Шаблоны для агента и OpenCode
+
+- `AGENTS.md.sample` - стартовый шаблон системных правил для автономного агента, работающего через этот MCP.
+- `opencode.json.sample` - пример конфигурации OpenCode для запуска `FilesystemMCP` как локального MCP-сервера.
+
+Как использовать:
+- Скопируй `AGENTS.md.sample` в `AGENTS.md` и адаптируй правила под проект.
+- Скопируй `opencode.json.sample` в конфиг OpenCode и укажи:
+  - `command[0]` -> путь к собранному `FilesystemMCP.exe`
+  - `command[1]` -> путь к целевой workspace-директории
 
 ### MCP Инструменты
 
@@ -192,16 +203,5 @@ dotnet publish -c Release
 - `target_snippet` (string, required) - заменяемый фрагмент кода
 - `replacement_snippet` (string, required) - новый фрагмент кода
 - `original_hash` (string, required) - хеш актуального состояния файла
-
-</details>
-
-#### `append_to_file`
-Добавляет текст в конец существующего файла. Полезно для добавления новых функций без чтения всего файла целиком.
-
-<details>
-<summary>Параметры</summary>
-
-- `path` (string, required) - относительный путь внутри `WorkspaceRoot`
-- `content` (string, required) - добавляемое содержимое
 
 </details>
