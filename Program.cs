@@ -26,6 +26,8 @@ internal static class Program
 
         var fileService = new FileService(workspaceRoot);
         var mutationService = new MutationService(workspaceRoot);
+        var toolRegistry = new ToolRegistry();
+        toolRegistry.Register(new ReadFileTool(fileService));
 
         while (true)
         {
@@ -46,7 +48,7 @@ internal static class Program
             try
             {
                 request = JsonSerializer.Deserialize(line, McpJsonContext.Default.JsonRpcRequest);
-                response = await ProcessRequestAsync(request, fileService, mutationService, workspaceRoot);
+                response = await ProcessRequestAsync(request, fileService, mutationService, workspaceRoot, toolRegistry);
             }
             catch (Exception ex)
             {
@@ -74,7 +76,8 @@ internal static class Program
         JsonRpcRequest? request,
         FileService fileService,
         MutationService mutationService,
-        string workspaceRoot)
+        string workspaceRoot,
+        ToolRegistry toolRegistry)
     {
         if (request is null)
         {
@@ -102,6 +105,8 @@ internal static class Program
 
         return request.Method switch
         {
+            "tools/list" => HandleToolsList(toolRegistry, request.Id),
+            "tools/call" => await HandleToolsCallAsync(request, toolRegistry),
             "read_file" => await HandleReadFileAsync(request, fileService),
             "create_file" => await HandleCreateFileAsync(request, mutationService),
             "replace_in_file" => await HandleReplaceInFileAsync(request, mutationService),
@@ -110,6 +115,34 @@ internal static class Program
             "append_to_file" => HandleAppendToFileStub(request, workspaceRoot),
             _ => CreateErrorResponse(request.Id, -32601, "Method not found")
         };
+    }
+
+    private static JsonRpcResponse HandleToolsList(ToolRegistry toolRegistry, JsonElement? id)
+    {
+        var payload = toolRegistry.GetToolsListAsJson();
+        return CreateResultResponse(id, payload);
+    }
+
+    private static async Task<JsonRpcResponse> HandleToolsCallAsync(JsonRpcRequest request, ToolRegistry toolRegistry)
+    {
+        var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ToolsCallParams);
+        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Name))
+        {
+            return CreateErrorResponse(request.Id, -32602, "Missing or invalid tools/call params.");
+        }
+
+        var arguments = parameters.Arguments is null
+            || parameters.Arguments.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? EmptyObject()
+            : parameters.Arguments.Value;
+
+        var toolResult = await toolRegistry.ExecuteToolAsync(parameters.Name, arguments);
+        var result = new ToolsCallResult(
+            Content: new[] { new ToolCallContent("text", toolResult) },
+            IsError: false);
+
+        var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult);
+        return CreateResultResponse(request.Id, payload);
     }
 
     private static async Task<JsonRpcResponse> HandleReadFileAsync(JsonRpcRequest request, FileService fileService)
@@ -210,6 +243,12 @@ internal static class Program
         }
 
         return paramsNode.Value.Deserialize(typeInfo);
+    }
+
+    private static JsonElement EmptyObject()
+    {
+        using var document = JsonDocument.Parse("{}");
+        return document.RootElement.Clone();
     }
 
     private static JsonRpcResponse CreateResultResponse(JsonElement? id, JsonElement result) =>

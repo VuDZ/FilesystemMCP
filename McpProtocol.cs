@@ -56,6 +56,10 @@ internal sealed record AppendToFileParams(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("content")] string Content);
 
+internal sealed record ToolsCallParams(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("arguments")] JsonElement? Arguments);
+
 internal sealed record ListDirectoryResult(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("entries")] IReadOnlyList<string> Entries);
@@ -83,6 +87,22 @@ internal sealed record WriteResult(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("status")] string Status);
 
+internal sealed record ToolDefinition(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("inputSchema")] JsonElement InputSchema);
+
+internal sealed record ToolsListResult(
+    [property: JsonPropertyName("tools")] IReadOnlyList<ToolDefinition> Tools);
+
+internal sealed record ToolCallContent(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("text")] string Text);
+
+internal sealed record ToolsCallResult(
+    [property: JsonPropertyName("content")] IReadOnlyList<ToolCallContent> Content,
+    [property: JsonPropertyName("isError")] bool IsError);
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -97,12 +117,17 @@ internal sealed record WriteResult(
 [JsonSerializable(typeof(ListDirectoryParams))]
 [JsonSerializable(typeof(SearchParams))]
 [JsonSerializable(typeof(AppendToFileParams))]
+[JsonSerializable(typeof(ToolsCallParams))]
 [JsonSerializable(typeof(ListDirectoryResult))]
 [JsonSerializable(typeof(ReadFileResult))]
 [JsonSerializable(typeof(SearchResult))]
 [JsonSerializable(typeof(CreateFileResult))]
 [JsonSerializable(typeof(ReplaceInFileResult))]
 [JsonSerializable(typeof(WriteResult))]
+[JsonSerializable(typeof(ToolDefinition))]
+[JsonSerializable(typeof(ToolsListResult))]
+[JsonSerializable(typeof(ToolCallContent))]
+[JsonSerializable(typeof(ToolsCallResult))]
 internal partial class McpJsonContext : JsonSerializerContext
 {
 }
