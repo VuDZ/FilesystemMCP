@@ -5,6 +5,8 @@ namespace FilesystemMcp;
 internal sealed class ToolRegistry
 {
     private readonly Dictionary<string, IMcpTool> _tools = new(StringComparer.Ordinal);
+    private JsonElement _cachedToolsList;
+    private bool _isToolsListCached;
 
     public void Register(IMcpTool tool)
     {
@@ -15,10 +17,16 @@ internal sealed class ToolRegistry
         }
 
         _tools[tool.Name] = tool;
+        _isToolsListCached = false;
     }
 
     public JsonElement GetToolsListAsJson()
     {
+        if (_isToolsListCached)
+        {
+            return _cachedToolsList;
+        }
+
         var list = new List<ToolDefinition>(_tools.Count);
         foreach (var tool in _tools.Values)
         {
@@ -28,7 +36,9 @@ internal sealed class ToolRegistry
         }
 
         var payload = new ToolsListResult(list);
-        return JsonSerializer.SerializeToElement(payload, McpJsonContext.Default.ToolsListResult);
+        _cachedToolsList = JsonSerializer.SerializeToElement(payload, McpJsonContext.Default.ToolsListResult);
+        _isToolsListCached = true;
+        return _cachedToolsList;
     }
 
     public Task<string> ExecuteToolAsync(string name, JsonElement arguments)

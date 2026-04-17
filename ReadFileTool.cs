@@ -30,6 +30,11 @@ internal sealed class ReadFileTool : IMcpTool
 
     public async Task<string> ExecuteAsync(JsonElement arguments)
     {
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            throw new ArgumentException("Arguments must be a JSON object.");
+        }
+
         if (!arguments.TryGetProperty("path", out var pathNode) || pathNode.ValueKind != JsonValueKind.String)
         {
             throw new ArgumentException("Missing required argument: path.");
@@ -44,7 +49,7 @@ internal sealed class ReadFileTool : IMcpTool
         int? startLine = null;
         int? endLine = null;
 
-        if (arguments.TryGetProperty("start_line", out var startNode))
+        if (arguments.TryGetProperty("start_line", out var startNode) && startNode.ValueKind != JsonValueKind.Null)
         {
             if (startNode.ValueKind != JsonValueKind.Number || !startNode.TryGetInt32(out var startValue))
             {
@@ -54,7 +59,7 @@ internal sealed class ReadFileTool : IMcpTool
             startLine = startValue;
         }
 
-        if (arguments.TryGetProperty("end_line", out var endNode))
+        if (arguments.TryGetProperty("end_line", out var endNode) && endNode.ValueKind != JsonValueKind.Null)
         {
             if (endNode.ValueKind != JsonValueKind.Number || !endNode.TryGetInt32(out var endValue))
             {
