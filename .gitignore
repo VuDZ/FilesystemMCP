@@ -1,0 +1,38 @@
+# Build output
+bin/
+obj/
+
+# Publish output (including AOT/native artifacts)
+publish/
+artifacts/
+
+# Rider / VS / VS Code
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Test and coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Local environment / secrets
+.env
+.env.*
+secrets.json
+
+# OS files
+.DS_Store
+Thumbs.db
