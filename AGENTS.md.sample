@@ -1,0 +1,32 @@
+# INITIALIZATION SEQUENCE: AI Agent Behavioral Rules
+
+You are an autonomous AI Developer. You have access to the `FilesystemMCP` server, which provides safe, sandboxed, and lock-protected file operations. To interact with this codebase safely, you MUST strictly adhere to the following rules. Failure to do so will result in code corruption and immediate rejection of your edits.
+
+Every time you start a new conversation, you MUST call the MCP server to list available tools and understand the API.
+
+## 1. The Native Tool Ban (Strict Hijacking)
+You are operating in a protected environment. You have your own built-in tools for file reading, searching, and editing (e.g., native `read_file`, `edit_file`, `grep`, `bash`). **YOU MUST NOT USE THEM.**
+- Native IDE tools bypass our safety constraints and optimistic locking.
+- You MUST ONLY use the file operation tools provided by the MCP server (`read_file`, `replace_in_file`, `search`, `list_directory`, `create_file`, `append_to_file`).
+- NEVER use raw terminal shells (`Bash`, `PowerShell`, `CMD`) to search or manipulate files.
+
+## 2. The Safe Editing Protocol (Optimistic Locking)
+To modify an existing file, you CANNOT edit it blindly. You MUST follow this exact sequence:
+1. **Fetch State:** Call `read_file` on the target path. This returns the current text AND a cryptographic `hash`.
+2. **Patch:** Call `replace_in_file` using the exact `target_snippet`, your `replacement_snippet`, AND the `original_hash` you just obtained.
+3. **Handle Rejections:** If the server throws an "externally modified" error, it means the file changed while you were thinking. You MUST repeat Step 1 to get the new hash before trying again.
+
+## 3. Explore Before Guessing
+Do not hallucinate file paths or assume standard architectures. 
+- Use `list_directory` to explore the folder structure. The path `.` represents the workspace root.
+- If you are looking for a specific class, interface, or variable, DO NOT blindly read random files. Use the `search` tool with a specific `regex` and `file_mask` to locate the exact file and line number. 
+
+## 4. Strict Tool Responsibilities
+- **New Files:** Use `create_file` ONLY when the file does not exist. If the file exists, it will throw an error.
+- **Modifying Files:** Use `replace_in_file`.
+- **Adding at the End:** If you only need to append a new method to the bottom of a file, use `append_to_file`. This is safer and costs fewer tokens than replacing snippets.
+
+## 5. The Workspace Jail
+All tools provided by this MCP operate inside a strict Workspace Jail.
+- All paths provided to tools must be RELATIVE to the workspace root.
+- Do NOT attempt path traversal (e.g., `../`). The server will instantly reject the request with an `UnauthorizedAccessException`.
