@@ -22,7 +22,7 @@ Since this is a Native AOT project, you can compile it into a single, standalone
 dotnet publish -c Release
 ```
 
-The compiled binary will be located in your publish directory (e.g., `bin/Release/net10.0/win-x64/publish/`).
+The compiled binary will be located in your publish directory (e.g., `bin/Release/net10.0/win-x64/publish/`). The publish folder also includes `install2opencode.ps1` and `AGENTS.md.sample` for OpenCode setup.
 
 ### Client Configuration (Cursor / RooCode / Claude Desktop)
 Add the compiled executable to your MCP client settings. 
@@ -34,14 +34,37 @@ Add the compiled executable to your MCP client settings.
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
 
+### OpenCode Installation (Recommended)
+
+After `dotnet publish`, use `install2opencode.ps1` from the publish directory. It ships next to `FilesystemMCP.exe` and reads `AGENTS.md.sample` from the same folder.
+
+**From the target project** (current directory becomes workspace):
+
+```powershell
+cd C:\path\to\your\target\repository
+C:\path\to\publish\install2opencode.ps1
+```
+
+**From the publish directory** (pass workspace explicitly):
+
+```powershell
+cd C:\path\to\publish
+.\install2opencode.ps1 -WorkspacePath C:\path\to\your\target\repository
+```
+
+The script:
+- writes `opencode.json` with `mcp.filesystem-mcp` (`command[0]` = binary, `command[1]` = workspace root)
+- creates or updates `AGENTS.md` from `AGENTS.md.sample` if the sample rules are not already present
+
 ### Agent & OpenCode Templates
 
-- `AGENTS.md.sample` - starter prompt/rules for autonomous agents working through this MCP server.
-- `opencode.json.sample` - sample OpenCode MCP config for running `FilesystemMCP` as a local server.
+- `AGENTS.md.sample` - starter prompt/rules for autonomous agents (copied to publish output).
+- `opencode.json.sample` - reference OpenCode MCP config (manual setup alternative).
+- `install2opencode.ps1` - automated installer (copied to publish output).
 
-When using templates:
+Manual setup (alternative):
 - Copy `AGENTS.md.sample` to `AGENTS.md` and adapt rules to your workflow.
-- Copy `opencode.json.sample` to your OpenCode config and set:
+- Copy `opencode.json.sample` to `opencode.json` and set:
   - `command[0]` -> path to built `FilesystemMCP.exe`
   - `command[1]` -> target workspace root path
 
@@ -124,7 +147,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 dotnet publish -c Release
 ```
 
-Скомпилированный бинарник будет лежать в директории publish (например, `bin/Release/net10.0/win-x64/publish/`).
+Скомпилированный бинарник будет лежать в директории publish (например, `bin/Release/net10.0/win-x64/publish/`). В publish также попадают `install2opencode.ps1` и `AGENTS.md.sample` для установки в OpenCode.
 
 ### Настройка клиента (Cursor / RooCode / Claude Desktop)
 Добавь скомпилированный файл в настройки MCP твоего клиента. 
@@ -136,14 +159,37 @@ dotnet publish -c Release
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
 
+### Установка в OpenCode (рекомендуется)
+
+После `dotnet publish` используй `install2opencode.ps1` из каталога publish. Скрипт лежит рядом с `FilesystemMCP.exe` и читает `AGENTS.md.sample` из той же папки.
+
+**Из целевого проекта** (текущая директория = workspace):
+
+```powershell
+cd C:\path\to\your\target\repository
+C:\path\to\publish\install2opencode.ps1
+```
+
+**Из каталога publish** (workspace передаётся явно):
+
+```powershell
+cd C:\path\to\publish
+.\install2opencode.ps1 -WorkspacePath C:\path\to\your\target\repository
+```
+
+Скрипт:
+- создаёт `opencode.json` с `mcp.filesystem-mcp` (`command[0]` = бинарник, `command[1]` = корень workspace)
+- создаёт или дополняет `AGENTS.md` из `AGENTS.md.sample`, если правил ещё нет
+
 ### Шаблоны для агента и OpenCode
 
-- `AGENTS.md.sample` - стартовый шаблон системных правил для автономного агента, работающего через этот MCP.
-- `opencode.json.sample` - пример конфигурации OpenCode для запуска `FilesystemMCP` как локального MCP-сервера.
+- `AGENTS.md.sample` - стартовый шаблон системных правил (копируется в publish).
+- `opencode.json.sample` - пример конфигурации OpenCode (ручная настройка).
+- `install2opencode.ps1` - автоматическая установка (копируется в publish).
 
-Как использовать:
+Ручная настройка (альтернатива):
 - Скопируй `AGENTS.md.sample` в `AGENTS.md` и адаптируй правила под проект.
-- Скопируй `opencode.json.sample` в конфиг OpenCode и укажи:
+- Скопируй `opencode.json.sample` в `opencode.json` и укажи:
   - `command[0]` -> путь к собранному `FilesystemMCP.exe`
   - `command[1]` -> путь к целевой workspace-директории
 

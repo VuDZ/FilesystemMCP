@@ -16,4 +16,9 @@
     <!-- Legacy file guard: protocol context is defined in McpProtocol.cs -->
     <Compile Remove="McpJsonContext.cs" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="install2opencode.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
