@@ -60,6 +60,24 @@ internal sealed record ToolsCallParams(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("arguments")] JsonElement? Arguments);
 
+internal sealed record InitializeParams(
+    [property: JsonPropertyName("protocolVersion")] string? ProtocolVersion,
+    [property: JsonPropertyName("capabilities")] JsonElement? Capabilities,
+    [property: JsonPropertyName("clientInfo")] ClientInfo? ClientInfo);
+
+internal sealed record ClientInfo(
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("version")] string? Version);
+
+internal sealed record ServerInfo(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("version")] string Version);
+
+internal sealed record InitializeResult(
+    [property: JsonPropertyName("protocolVersion")] string ProtocolVersion,
+    [property: JsonPropertyName("capabilities")] JsonElement Capabilities,
+    [property: JsonPropertyName("serverInfo")] ServerInfo ServerInfo);
+
 internal sealed record ListDirectoryResult(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("entries")] IReadOnlyList<string> Entries);
@@ -123,6 +141,10 @@ internal sealed record ToolsCallResult(
 [JsonSerializable(typeof(SearchParams))]
 [JsonSerializable(typeof(AppendToFileParams))]
 [JsonSerializable(typeof(ToolsCallParams))]
+[JsonSerializable(typeof(InitializeParams))]
+[JsonSerializable(typeof(ClientInfo))]
+[JsonSerializable(typeof(ServerInfo))]
+[JsonSerializable(typeof(InitializeResult))]
 [JsonSerializable(typeof(ListDirectoryResult))]
 [JsonSerializable(typeof(ReadFileResult))]
 [JsonSerializable(typeof(SearchResult))]

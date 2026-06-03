@@ -5,6 +5,10 @@ namespace FilesystemMcp;
 
 internal static class Program
 {
+    private const string DefaultProtocolVersion = "2024-11-05";
+    private const string ServerName = "FilesystemMCP";
+    private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
+
     private static async Task<int> Main(string[] args)
     {
         if (args.Length < 1)
@@ -109,6 +113,10 @@ internal static class Program
 
         return request.Method switch
         {
+            "initialize" => HandleInitialize(request),
+            "initialized" => null,
+            "notifications/initialized" => null,
+            "ping" => HandlePing(request.Id),
             "tools/list" => HandleToolsList(toolRegistry, request.Id),
             "tools/call" => await HandleToolsCallAsync(request, toolRegistry),
             "read_file" => await HandleReadFileAsync(request, fileService),
@@ -120,6 +128,25 @@ internal static class Program
             _ => CreateErrorResponse(request.Id, -32601, "Method not found")
         };
     }
+
+    private static JsonRpcResponse HandleInitialize(JsonRpcRequest request)
+    {
+        var parameters = request.Params is null || request.Params.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? null
+            : DeserializeParams(request.Params, McpJsonContext.Default.InitializeParams);
+
+        var protocolVersion = string.IsNullOrWhiteSpace(parameters?.ProtocolVersion)
+            ? DefaultProtocolVersion
+            : parameters!.ProtocolVersion!;
+
+        var serverInfo = new ServerInfo(ServerName, GetServerVersion());
+        var result = new InitializeResult(protocolVersion, ServerCapabilities, serverInfo);
+        var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.InitializeResult);
+        return CreateResultResponse(request.Id, payload);
+    }
+
+    private static JsonRpcResponse HandlePing(JsonElement? id) =>
+        CreateResultResponse(id, EmptyObject());
 
     private static JsonRpcResponse HandleToolsList(ToolRegistry toolRegistry, JsonElement? id)
     {
@@ -261,6 +288,18 @@ internal static class Program
     {
         using var document = JsonDocument.Parse("{}");
         return document.RootElement.Clone();
+    }
+
+    private static JsonElement ParseJsonElement(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static string GetServerVersion()
+    {
+        var version = typeof(Program).Assembly.GetName().Version?.ToString();
+        return string.IsNullOrWhiteSpace(version) ? "1.0.0" : version;
     }
 
     private static JsonRpcResponse CreateResultResponse(JsonElement? id, JsonElement result) =>
