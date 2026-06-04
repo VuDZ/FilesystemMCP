@@ -41,13 +41,28 @@ internal sealed class ToolRegistry
         return _cachedToolsList;
     }
 
-    public Task<string> ExecuteToolAsync(string name, JsonElement arguments)
+    public async Task<string> ExecuteToolAsync(string name, JsonElement arguments)
     {
         if (!_tools.TryGetValue(name, out var tool))
         {
             throw new InvalidOperationException("Tool not found");
         }
 
-        return tool.ExecuteAsync(arguments);
+        McpLogger.LogToolInvoke(name, arguments);
+        var startedAt = Environment.TickCount64;
+
+        try
+        {
+            var result = await tool.ExecuteAsync(arguments);
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAt);
+            McpLogger.LogToolComplete(name, elapsed, success: true, detail: $"resultChars={result.Length}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAt);
+            McpLogger.LogToolComplete(name, elapsed, success: false, detail: ex.Message);
+            throw;
+        }
     }
 }
