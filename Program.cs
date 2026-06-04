@@ -111,6 +111,8 @@ internal static class Program
                 message: "Method is required");
         }
 
+        McpLogger.LogInfo($"Processing method: {request.Method}");
+
         return request.Method switch
         {
             "initialize" => HandleInitialize(request),
@@ -125,7 +127,8 @@ internal static class Program
             "list_directory" => HandleListDirectoryStub(request, workspaceRoot),
             "search" => HandleSearchStub(request),
             "append_to_file" => HandleAppendToFileStub(request, workspaceRoot),
-            _ => CreateErrorResponse(request.Id, -32601, "Method not found")
+            "prompts/list" => null,
+            _ => CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method)
         };
     }
 
