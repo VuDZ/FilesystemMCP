@@ -8,6 +8,8 @@ internal static class Program
     private const string DefaultProtocolVersion = "2024-11-05";
     private const string ServerName = "FilesystemMCP";
     private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
+    private static readonly JsonElement EmptyPromptsList = ParseJsonElement("""{"prompts":[]}""");
+    private static readonly JsonElement EmptyResourcesList = ParseJsonElement("""{"resources":[]}""");
 
     private static async Task<int> Main(string[] args)
     {
@@ -125,7 +127,9 @@ internal static class Program
             "list_directory" => HandleListDirectoryStub(request, workspaceRoot),
             "search" => HandleSearchStub(request),
             "append_to_file" => HandleAppendToFileStub(request, workspaceRoot),
-            _ => CreateErrorResponse(request.Id, -32601, "Method not found")
+            "prompts/list" => HandlePromptsList(request.Id),
+            "resources/list" => HandleResourcesList(request.Id),
+            _ => CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method)
         };
     }
 
@@ -153,6 +157,12 @@ internal static class Program
         var payload = toolRegistry.GetToolsListAsJson();
         return CreateResultResponse(id, payload);
     }
+
+    private static JsonRpcResponse HandlePromptsList(JsonElement? id) =>
+        CreateResultResponse(id, EmptyPromptsList);
+
+    private static JsonRpcResponse HandleResourcesList(JsonElement? id) =>
+        CreateResultResponse(id, EmptyResourcesList);
 
     private static async Task<JsonRpcResponse> HandleToolsCallAsync(JsonRpcRequest request, ToolRegistry toolRegistry)
     {
