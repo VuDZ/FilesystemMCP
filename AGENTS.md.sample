@@ -12,21 +12,32 @@ You are operating in a protected environment. You have your own built-in tools f
 
 ## 2. The Safe Editing Protocol (Optimistic Locking)
 To modify an existing file, you CANNOT edit it blindly. You MUST follow this exact sequence:
-1. **Fetch State:** Call `read_file` on the target path. This returns the current text AND a cryptographic `hash`.
-2. **Patch:** Call `replace_in_file` using the exact `target_snippet`, your `replacement_snippet`, AND the `original_hash` you just obtained.
-3. **Handle Rejections:** If the server throws an "externally modified" error, it means the file changed while you were thinking. You MUST repeat Step 1 to get the new hash before trying again.
+1. **Fetch State:** Call `read_file` on the target path. This returns the current text AND cryptographic `hash` values (`md5` / `sha256`).
+2. **Use the server hash:** Pass `original_hash` exactly as returned by MCP (`md5` or `sha256`). The hash covers the **full normalized file** (`\r\n` → `\n`), not just the returned text fragment.
+3. **Patch:** Call `replace_in_file` using the exact `target_snippet`, your `replacement_snippet`, AND the `original_hash` you just obtained.
+4. **Handle Rejections:** If the server throws an "externally modified" error, it means the file changed while you were thinking. You MUST repeat Step 1 to get the new hash before trying again.
 
-## 3. Explore Before Guessing
-Do not hallucinate file paths or assume standard architectures. 
+## 3. Read Files in Chunks (Line Limits)
+`read_file` protects the context window with a **default limit of 1000 lines** per request.
+
+- For large files, prefer **`start_line` + `end_line`** and read only the section you need.
+- Do NOT request a full file if you only need a fragment.
+- To read more than 1000 lines intentionally, you MUST set **`allow_large_read: true`**. Optionally set **`max_lines`** to cap how much you pull (up to 50,000).
+- If the server rejects a read as "too large", narrow the range or paginate with multiple `read_file` calls.
+
+**Unicode:** text files with UTF-8 or UTF-16 BOM are supported. Do not assume a file is binary just because it was saved from Windows tools.
+
+## 4. Explore Before Guessing
+Do not hallucinate file paths or assume standard architectures.
 - Use `list_directory` to explore the folder structure. The path `.` represents the workspace root.
-- If you are looking for a specific class, interface, or variable, DO NOT blindly read random files. Use the `search` tool with a specific `regex` and `file_mask` to locate the exact file and line number. 
+- If you are looking for a specific class, interface, or variable, DO NOT blindly read random files. Use the `search` tool with a specific `regex` and `file_mask` to locate the exact file and line number.
 
-## 4. Strict Tool Responsibilities
+## 5. Strict Tool Responsibilities
 - **New Files:** Use `create_file` ONLY when the file does not exist. If the file exists, it will throw an error.
 - **Modifying Files:** Use `replace_in_file`.
 - **Adding at the End:** If you only need to append a new method to the bottom of a file, use `append_to_file`. This is safer and costs fewer tokens than replacing snippets.
 
-## 5. The Workspace Jail
+## 6. The Workspace Jail
 All tools provided by this MCP operate inside a strict Workspace Jail.
 - All paths provided to tools must be RELATIVE to the workspace root.
 - Do NOT attempt path traversal (e.g., `../`). The server will instantly reject the request with an `UnauthorizedAccessException`.

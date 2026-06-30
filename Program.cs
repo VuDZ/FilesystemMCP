@@ -202,7 +202,12 @@ internal static class Program
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid read_file params.");
         }
 
-        var result = await fileService.ReadFileAsync(parameters.Path, parameters.StartLine, parameters.EndLine);
+        var options = new ReadFileOptions(
+            StartLine: parameters.StartLine,
+            EndLine: parameters.EndLine,
+            AllowLargeRead: parameters.AllowLargeRead,
+            MaxLines: parameters.MaxLines);
+        var result = await fileService.ReadFileAsync(parameters.Path, options);
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ReadFileResult);
         return CreateResultResponse(request.Id, payload);
     }

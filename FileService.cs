@@ -1,12 +1,12 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace FilesystemMcp;
 
 internal sealed class FileService
 {
-    private const int BinaryProbeLength = 512;
-    private const int DefaultMaxLines = 1000;
+    public const int DefaultMaxLines = 1000;
+    public const int AbsoluteMaxLines = 50_000;
+
     private readonly string _workspaceRoot;
 
     public FileService(string workspaceRoot)
@@ -21,47 +21,79 @@ internal sealed class FileService
 
     public async Task<ReadFileResult> ReadFileAsync(
         string path,
-        int? startLine,
-        int? endLine,
+        ReadFileOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
 
-        ValidateLineRange(startLine, endLine);
+        ValidateLineRange(options.StartLine, options.EndLine);
+        var effectiveMaxLines = ResolveEffectiveMaxLines(options);
 
-        var streamOptions = new FileStreamOptions
-        {
-            Access = FileAccess.Read,
-            Mode = FileMode.Open,
-            Share = FileShare.ReadWrite,
-            Options = FileOptions.SequentialScan
-        };
-
-        await using var stream = new FileStream(resolvedPath, streamOptions);
-        await EnsureTextFileAsync(stream, cancellationToken);
-        stream.Position = 0;
-
-        using var reader = new StreamReader(
-            stream,
-            encoding: Encoding.UTF8,
-            detectEncodingFromByteOrderMarks: true,
-            bufferSize: 4096,
-            leaveOpen: true);
-
-        var (text, totalLines) = await ReadRequestedContentAsync(
-            reader,
-            startLine,
-            endLine,
-            cancellationToken);
-
-        if (!startLine.HasValue && !endLine.HasValue && totalLines > DefaultMaxLines)
+        if (options.StartLine.HasValue
+            && options.EndLine.HasValue
+            && options.EndLine.Value - options.StartLine.Value + 1 > effectiveMaxLines)
         {
             throw new InvalidOperationException(
-                $"File too large ({totalLines} lines). Specify start_line and end_line parameters.");
+                $"Requested line range exceeds the limit of {effectiveMaxLines} lines. "
+                + "Set allow_large_read=true and optionally max_lines to read a larger range.");
         }
 
-        var (md5, sha256) = ComputeHashes(text);
+        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
+        var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonicalContent);
+
+        var isFullFileRead = !options.StartLine.HasValue && !options.EndLine.HasValue;
+        var (text, totalLines) = FileTextHelper.ExtractRequestedContent(
+            canonicalContent,
+            options.StartLine,
+            options.EndLine,
+            effectiveMaxLines,
+            isFullFileRead);
+
+        if (isFullFileRead)
+        {
+            if (!options.AllowLargeRead && totalLines > DefaultMaxLines)
+            {
+                throw new InvalidOperationException(
+                    $"File too large ({totalLines} lines). "
+                    + $"Default limit is {DefaultMaxLines} lines. "
+                    + "Use start_line/end_line, or set allow_large_read=true (optionally with max_lines) to read more.");
+            }
+
+            if (options.AllowLargeRead
+                && !options.MaxLines.HasValue
+                && totalLines > AbsoluteMaxLines)
+            {
+                throw new InvalidOperationException(
+                    $"File too large ({totalLines} lines). "
+                    + $"Maximum allowed is {AbsoluteMaxLines} lines without an explicit max_lines value.");
+            }
+        }
+
         return new ReadFileResult(resolvedPath, text, md5, sha256);
+    }
+
+    public static int ResolveEffectiveMaxLines(ReadFileOptions options)
+    {
+        if (!options.AllowLargeRead)
+        {
+            return DefaultMaxLines;
+        }
+
+        if (!options.MaxLines.HasValue)
+        {
+            return AbsoluteMaxLines;
+        }
+
+        if (options.MaxLines.Value < 1 || options.MaxLines.Value > AbsoluteMaxLines)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"max_lines must be between 1 and {AbsoluteMaxLines}.");
+        }
+
+        return options.MaxLines.Value;
     }
 
     public async Task<(string NewText, string NewHash)> ReplaceInFileAsync(
@@ -87,58 +119,22 @@ internal sealed class FileService
         }
 
         var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
-        string currentContent;
+        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
+        FileTextHelper.EnsureHashMatches(originalHash, canonicalContent);
 
-        await using (var stream = new FileStream(
-                         resolvedPath,
-                         new FileStreamOptions
-                         {
-                             Access = FileAccess.Read,
-                             Mode = FileMode.Open,
-                             Share = FileShare.ReadWrite,
-                             Options = FileOptions.SequentialScan
-                         }))
-        using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
-        {
-            currentContent = await reader.ReadToEndAsync(cancellationToken);
-        }
+        var normalizedTarget = FileTextHelper.NormalizeLineEndings(targetSnippet);
+        var normalizedReplacement = FileTextHelper.NormalizeLineEndings(replacementSnippet);
 
-        var (currentMd5, currentSha256) = ComputeHashes(currentContent);
-        if (!string.Equals(originalHash, currentMd5, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(originalHash, currentSha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "File modified externally. Please use read_file to get the latest state before patching.");
-        }
-
-        var normalizedFile = NormalizeLineEndings(currentContent);
-        var normalizedTarget = NormalizeLineEndings(targetSnippet);
-        var normalizedReplacement = NormalizeLineEndings(replacementSnippet);
-
-        var targetIndex = normalizedFile.IndexOf(normalizedTarget, StringComparison.Ordinal);
+        var targetIndex = canonicalContent.IndexOf(normalizedTarget, StringComparison.Ordinal);
         if (targetIndex < 0)
         {
             throw new ArgumentException("Target snippet not found in the file. Ensure you copied the exact code block.");
         }
 
-        var updatedText = ReplaceFirst(normalizedFile, normalizedTarget, normalizedReplacement, targetIndex);
+        var updatedText = ReplaceFirst(canonicalContent, normalizedTarget, normalizedReplacement, targetIndex);
+        await FileTextHelper.WriteUtf8WithoutBomAsync(resolvedPath, updatedText, cancellationToken);
 
-        await using (var stream = new FileStream(
-                         resolvedPath,
-                         new FileStreamOptions
-                         {
-                             Access = FileAccess.Write,
-                             Mode = FileMode.Create,
-                             Share = FileShare.ReadWrite,
-                             Options = FileOptions.SequentialScan
-                         }))
-        await using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
-        {
-            await writer.WriteAsync(updatedText.AsMemory(), cancellationToken);
-            await writer.FlushAsync(cancellationToken);
-        }
-
-        var (_, newSha256) = ComputeHashes(updatedText);
+        var (_, newSha256) = FileTextHelper.ComputeContentHashes(updatedText);
         return (updatedText, newSha256);
     }
 
@@ -164,66 +160,6 @@ internal sealed class FileService
             throw new ArgumentException("start_line cannot be greater than end_line.");
         }
     }
-
-    private static async Task EnsureTextFileAsync(FileStream stream, CancellationToken cancellationToken)
-    {
-        var probeBuffer = new byte[BinaryProbeLength];
-        var bytesRead = await stream.ReadAsync(probeBuffer.AsMemory(0, BinaryProbeLength), cancellationToken);
-
-        for (var i = 0; i < bytesRead; i++)
-        {
-            if (probeBuffer[i] == 0)
-            {
-                throw new InvalidOperationException("Binary file detected. Cannot read.");
-            }
-        }
-    }
-
-    private static async Task<(string Text, int TotalLines)> ReadRequestedContentAsync(
-        StreamReader reader,
-        int? startLine,
-        int? endLine,
-        CancellationToken cancellationToken)
-    {
-        var currentLine = 0;
-        var selected = new StringBuilder(capacity: 4096);
-        string? line;
-
-        while ((line = await reader.ReadLineAsync(cancellationToken)) is not null)
-        {
-            currentLine++;
-
-            if (startLine.HasValue && endLine.HasValue)
-            {
-                if (currentLine < startLine.Value || currentLine > endLine.Value)
-                {
-                    continue;
-                }
-            }
-
-            if (selected.Length > 0)
-            {
-                selected.Append('\n');
-            }
-
-            selected.Append(line);
-        }
-
-        return (selected.ToString(), currentLine);
-    }
-
-    private static (string Md5, string Sha256) ComputeHashes(string content)
-    {
-        var bytes = Encoding.UTF8.GetBytes(content);
-        var md5Bytes = MD5.HashData(bytes);
-        var sha256Bytes = SHA256.HashData(bytes);
-
-        return (Convert.ToHexString(md5Bytes), Convert.ToHexString(sha256Bytes));
-    }
-
-    private static string NormalizeLineEndings(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n');
 
     private static string ReplaceFirst(string source, string target, string replacement, int index)
     {

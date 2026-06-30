@@ -12,7 +12,18 @@ internal sealed class ReadFileTool : IMcpTool
   "properties": {
     "path": { "type": "string", "minLength": 1 },
     "start_line": { "type": "integer", "minimum": 1 },
-    "end_line": { "type": "integer", "minimum": 1 }
+    "end_line": { "type": "integer", "minimum": 1 },
+    "allow_large_read": {
+      "type": "boolean",
+      "default": false,
+      "description": "Explicit opt-in to read more than 1000 lines in one request."
+    },
+    "max_lines": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50000,
+      "description": "Custom line limit when allow_large_read is true. Defaults to 50000."
+    }
   }
 }
 """;
@@ -25,7 +36,10 @@ internal sealed class ReadFileTool : IMcpTool
     }
 
     public string Name => "read_file";
-    public string Description => "Reads a file's content. Returns the text and a 'hash'. Always use this tool BEFORE patching a file to get the current state and the required 'hash' for replace_in_file. Binary files are rejected.";
+    public string Description =>
+        "Reads a text file (UTF-8/UTF-16 with BOM). Returns text and md5/sha256 hashes of the full normalized file. "
+        + "Default full-file limit is 1000 lines; set allow_large_read=true to read more (optionally with max_lines). "
+        + "Always use before replace_in_file.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments)
@@ -46,30 +60,48 @@ internal sealed class ReadFileTool : IMcpTool
             throw new ArgumentException("Argument path cannot be empty.");
         }
 
-        int? startLine = null;
-        int? endLine = null;
+        var options = new ReadFileOptions(
+            StartLine: ParseOptionalInt(arguments, "start_line"),
+            EndLine: ParseOptionalInt(arguments, "end_line"),
+            AllowLargeRead: ParseOptionalBool(arguments, "allow_large_read"),
+            MaxLines: ParseOptionalInt(arguments, "max_lines"));
 
-        if (arguments.TryGetProperty("start_line", out var startNode) && startNode.ValueKind != JsonValueKind.Null)
-        {
-            if (startNode.ValueKind != JsonValueKind.Number || !startNode.TryGetInt32(out var startValue))
-            {
-                throw new ArgumentException("start_line must be an integer.");
-            }
-
-            startLine = startValue;
-        }
-
-        if (arguments.TryGetProperty("end_line", out var endNode) && endNode.ValueKind != JsonValueKind.Null)
-        {
-            if (endNode.ValueKind != JsonValueKind.Number || !endNode.TryGetInt32(out var endValue))
-            {
-                throw new ArgumentException("end_line must be an integer.");
-            }
-
-            endLine = endValue;
-        }
-
-        var result = await _fileService.ReadFileAsync(path, startLine, endLine);
+        var result = await _fileService.ReadFileAsync(path, options);
         return JsonSerializer.Serialize(result, McpJsonContext.Default.ReadFileResult);
+    }
+
+    private static int? ParseOptionalInt(JsonElement arguments, string propertyName)
+    {
+        if (!arguments.TryGetProperty(propertyName, out var node) || node.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (node.ValueKind != JsonValueKind.Number || !node.TryGetInt32(out var value))
+        {
+            throw new ArgumentException($"{propertyName} must be an integer.");
+        }
+
+        return value;
+    }
+
+    private static bool ParseOptionalBool(JsonElement arguments, string propertyName)
+    {
+        if (!arguments.TryGetProperty(propertyName, out var node) || node.ValueKind == JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        if (node.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (node.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        throw new ArgumentException($"{propertyName} must be a boolean.");
     }
 }
