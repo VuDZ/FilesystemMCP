@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.1.1
+**Version:** 1.1.2
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -52,6 +52,8 @@ When using templates:
   - `command[1]` -> target workspace root path
 
 ### MCP Tools
+
+All path-based tools accept the file location as **`path`**, **`filePath`**, or **`file_path`** (first non-empty wins; priority: `path` > `filePath` > `file_path`).
 
 #### `list_directory`
 Lists files and directories in the specified folder (non-recursive). Agents MUST use this to explore the project structure before assuming file paths.
@@ -143,7 +145,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.1.1
+**Версия:** 1.1.2
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -189,6 +191,8 @@ dotnet publish -c Release
   - `command[1]` -> путь к целевой workspace-директории
 
 ### MCP Инструменты
+
+Все tools с путём к файлу/директории принимают **`path`**, **`filePath`** или **`file_path`** (используется первое непустое; приоритет: `path` > `filePath` > `file_path`).
 
 #### `list_directory`
 Показывает файлы и директории в указанной папке (без рекурсии). Агенты обязаны использовать этот инструмент для изучения структуры проекта, прежде чем предполагать пути к файлам.

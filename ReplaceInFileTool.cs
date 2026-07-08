@@ -9,9 +9,11 @@ internal sealed class ReplaceInFileTool : IMcpTool
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["path", "target_snippet", "replacement_snippet", "original_hash"],
+  "required": ["target_snippet", "replacement_snippet", "original_hash"],
   "properties": {
     "path": { "type": "string", "minLength": 1 },
+    "filePath": { "type": "string", "minLength": 1, "description": "Alias for path." },
+    "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." },
     "target_snippet": { "type": "string", "minLength": 1 },
     "replacement_snippet": { "type": "string" },
     "original_hash": { "type": "string", "minLength": 1 }
@@ -27,7 +29,10 @@ internal sealed class ReplaceInFileTool : IMcpTool
     }
 
     public string Name => "replace_in_file";
-    public string Description => "Replaces a specific snippet of code in a file. CRITICAL: You MUST provide the 'original_hash' exactly as returned by your last 'read_file' call. If you do not have the current hash, you MUST call 'read_file' first to get it.";
+    public string Description =>
+        "Replaces a specific snippet of code in a file. Path argument: path, filePath, or file_path (one required). "
+        + "CRITICAL: You MUST provide the 'original_hash' exactly as returned by your last 'read_file' call. "
+        + "If you do not have the current hash, you MUST call 'read_file' first to get it.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments)
@@ -37,7 +42,7 @@ internal sealed class ReplaceInFileTool : IMcpTool
             throw new ArgumentException("Arguments must be a JSON object.");
         }
 
-        var path = GetRequiredString(arguments, "path");
+        var path = ToolArguments.GetRequiredPath(arguments);
         var targetSnippet = GetRequiredString(arguments, "target_snippet");
         var replacementSnippet = GetRequiredString(arguments, "replacement_snippet");
         var originalHash = GetRequiredString(arguments, "original_hash");

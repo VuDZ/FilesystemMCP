@@ -10,9 +10,10 @@ internal sealed class ListDirectoryTool : IMcpTool
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["path"],
   "properties": {
-    "path": { "type": "string", "minLength": 1 }
+    "path": { "type": "string", "minLength": 1 },
+    "filePath": { "type": "string", "minLength": 1, "description": "Alias for path." },
+    "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." }
   }
 }
 """;
@@ -30,7 +31,9 @@ internal sealed class ListDirectoryTool : IMcpTool
     }
 
     public string Name => "list_directory";
-    public string Description => "Lists files and folders in a directory. ALWAYS use this to explore the project structure before assuming file paths.";
+    public string Description =>
+        "Lists files and folders in a directory. Path argument: path, filePath, or file_path (one required). "
+        + "ALWAYS use this to explore the project structure before assuming file paths.";
     public string InputSchemaJson => Schema;
 
     public Task<string> ExecuteAsync(JsonElement arguments)
@@ -40,18 +43,7 @@ internal sealed class ListDirectoryTool : IMcpTool
             throw new ArgumentException("Arguments must be a JSON object.");
         }
 
-        if (!arguments.TryGetProperty("path", out var pathNode)
-            || pathNode.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
-            || pathNode.ValueKind != JsonValueKind.String)
-        {
-            throw new ArgumentException("Missing required argument: path.");
-        }
-
-        var path = pathNode.GetString();
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            throw new ArgumentException("Argument path cannot be empty.");
-        }
+        var path = ToolArguments.GetRequiredPath(arguments);
 
         var resolved = WorkspaceJail.ResolvePath(_workspaceRoot, path);
         if (!Directory.Exists(resolved))

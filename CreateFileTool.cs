@@ -1,5 +1,5 @@
-using System.Text.Json;
 using System.Text;
+using System.Text.Json;
 
 namespace FilesystemMcp;
 
@@ -9,9 +9,11 @@ internal sealed class CreateFileTool : IMcpTool
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["path", "content"],
+  "required": ["content"],
   "properties": {
     "path": { "type": "string", "minLength": 1 },
+    "filePath": { "type": "string", "minLength": 1, "description": "Alias for path." },
+    "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." },
     "content": { "type": "string" }
   }
 }
@@ -30,7 +32,9 @@ internal sealed class CreateFileTool : IMcpTool
     }
 
     public string Name => "create_file";
-    public string Description => "Creates a strictly NEW file. Do NOT use this to edit existing files (use replace_in_file instead).";
+    public string Description =>
+        "Creates a strictly NEW file. Do NOT use this to edit existing files (use replace_in_file instead). "
+        + "Path argument: path, filePath, or file_path (one required).";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments)
@@ -40,24 +44,13 @@ internal sealed class CreateFileTool : IMcpTool
             throw new ArgumentException("Arguments must be a JSON object.");
         }
 
-        if (!arguments.TryGetProperty("path", out var pathNode)
-            || pathNode.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
-            || pathNode.ValueKind != JsonValueKind.String)
-        {
-            throw new ArgumentException("Missing required argument: path.");
-        }
+        var path = ToolArguments.GetRequiredPath(arguments);
 
         if (!arguments.TryGetProperty("content", out var contentNode)
             || contentNode.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
             || contentNode.ValueKind != JsonValueKind.String)
         {
             throw new ArgumentException("Missing required argument: content.");
-        }
-
-        var path = pathNode.GetString();
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            throw new ArgumentException("Argument path cannot be empty.");
         }
 
         var content = contentNode.GetString() ?? string.Empty;

@@ -197,7 +197,7 @@ internal static class Program
     private static async Task<JsonRpcResponse> HandleReadFileAsync(JsonRpcRequest request, FileService fileService)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ReadFileParams);
-        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Path))
+        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid read_file params.");
         }
@@ -207,7 +207,7 @@ internal static class Program
             EndLine: parameters.EndLine,
             AllowLargeRead: parameters.AllowLargeRead,
             MaxLines: parameters.MaxLines);
-        var result = await fileService.ReadFileAsync(parameters.Path, options);
+        var result = await fileService.ReadFileAsync(path, options);
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ReadFileResult);
         return CreateResultResponse(request.Id, payload);
     }
@@ -215,12 +215,12 @@ internal static class Program
     private static async Task<JsonRpcResponse> HandleCreateFileAsync(JsonRpcRequest request, MutationService mutationService)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.CreateFileParams);
-        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Path))
+        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid create_file params.");
         }
 
-        var result = await mutationService.CreateFileAsync(parameters.Path, parameters.Content ?? string.Empty);
+        var result = await mutationService.CreateFileAsync(path, parameters.Content ?? string.Empty);
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.CreateFileResult);
         return CreateResultResponse(request.Id, payload);
     }
@@ -228,13 +228,13 @@ internal static class Program
     private static async Task<JsonRpcResponse> HandleReplaceInFileAsync(JsonRpcRequest request, MutationService mutationService)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ReplaceInFileParams);
-        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Path))
+        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid replace_in_file params.");
         }
 
         var result = await mutationService.ReplaceInFileAsync(
-            parameters.Path,
+            path,
             parameters.TargetSnippet ?? string.Empty,
             parameters.ReplacementSnippet ?? string.Empty,
             parameters.OriginalHash ?? string.Empty);
@@ -246,12 +246,12 @@ internal static class Program
     private static JsonRpcResponse HandleListDirectoryStub(JsonRpcRequest request, string workspaceRoot)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ListDirectoryParams);
-        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Path))
+        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid list_directory params.");
         }
 
-        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, parameters.Path);
+        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, path);
         var result = new ListDirectoryResult(fullPath, Array.Empty<string>());
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ListDirectoryResult);
         return CreateResultResponse(request.Id, payload);
@@ -273,15 +273,31 @@ internal static class Program
     private static JsonRpcResponse HandleAppendToFileStub(JsonRpcRequest request, string workspaceRoot)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.AppendToFileParams);
-        if (parameters is null || string.IsNullOrWhiteSpace(parameters.Path))
+        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid append_to_file params.");
         }
 
-        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, parameters.Path);
+        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, path);
         var result = new WriteResult(fullPath, "stub");
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.WriteResult);
         return CreateResultResponse(request.Id, payload);
+    }
+
+    private static bool TryResolvePathParam(JsonElement? paramsNode, out string path)
+    {
+        path = string.Empty;
+        if (paramsNode is null || paramsNode.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return false;
+        }
+
+        if (paramsNode.Value.ValueKind is not JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return ToolArguments.TryGetPath(paramsNode.Value, out path);
     }
 
     private static TParams? DeserializeParams<TParams>(JsonElement? paramsNode, JsonTypeInfo<TParams> typeInfo)
