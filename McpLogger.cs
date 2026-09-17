@@ -10,7 +10,7 @@ internal static class McpLogger
 
         Console.Error.WriteLine(formattedMsg);
         
-        File.AppendAllText(GetLogFilename(), formattedMsg + Environment.NewLine);
+        AppendToLogFile(GetLogFilename(), formattedMsg);
     }
 
     private static string GetLogFilename()
@@ -21,7 +21,19 @@ internal static class McpLogger
             Directory.CreateDirectory(logDir);
         }
 
-        return Path.Combine(logDir, $"mcplog-{DateTime.Now:dd-MM-yyyy}.log");
+        return Path.Combine(logDir, $"mcplog-{DateTime.Now:dd-MM-yyyy}-pid{Environment.ProcessId}.log");
+    }
+
+    private static void AppendToLogFile(string filename, string message)
+    {
+        try
+        {
+            File.AppendAllText(filename, message + Environment.NewLine);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Log write failed (non-fatal): {ex.Message}");
+        }
     }
 
     public static void LogToolInvoke(string toolName, JsonElement arguments)
@@ -46,6 +58,6 @@ internal static class McpLogger
         }
         
         Console.Error.WriteLine(formattedMsg);
-        File.AppendAllText(GetLogFilename() , formattedMsg + Environment.NewLine);
+        AppendToLogFile(GetLogFilename(), formattedMsg);
     }
 }
