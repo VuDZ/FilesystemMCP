@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.3.0
+**Version:** 1.4.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -84,7 +84,7 @@ Lists files and directories in the specified folder (non-recursive). Agents MUST
 </details>
 
 #### `read_file`
-Reads a text file and returns the content along with MD5/SHA256 hashes. Supports UTF-8 and UTF-16 (with BOM). Binary files are rejected.
+Reads a text file and returns the content along with MD5/SHA256 hashes. Supports UTF-8 with or without BOM, and UTF-16/UTF-32 LE/BE when a BOM is present. Invalid bytes are rejected and left unchanged. Windows-1251 is not detected. Binary files are rejected.
 
 **Hash semantics:** `md5` and `sha256` always describe the **full file** after normalizing line endings (`\r\n` → `\n`). This is the locking hash for `replace_in_file`, even when `text` contains only a line range.
 
@@ -163,7 +163,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.3.0
+**Версия:** 1.4.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -223,7 +223,7 @@ dotnet publish -c Release
 </details>
 
 #### `read_file`
-Читает текстовый файл и возвращает содержимое с MD5/SHA256 хешами. Поддерживает UTF-8 и UTF-16 (с BOM). Бинарные файлы отклоняются.
+Читает текстовый файл и возвращает содержимое с MD5/SHA256 хешами. Поддерживается UTF-8 без BOM и с BOM, а также UTF-16/UTF-32 LE/BE при наличии BOM. Невалидные байты отклоняются и не изменяются. Windows-1251 не определяется. Бинарные файлы отклоняются.
 
 **Семантика хеша:** `md5` и `sha256` всегда описывают **весь файл** после нормализации переводов строк (`\r\n` → `\n`). Это locking-хеш для `replace_in_file`, даже если в `text` возвращён только диапазон строк.
 
@@ -304,4 +304,4 @@ dotnet publish -c Release
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. Зависимости FS-03/05/06 реализованы только в объёме atomic-write prerequisites. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. Зависимости FS-05/06 реализованы только в объёме atomic-write prerequisites. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

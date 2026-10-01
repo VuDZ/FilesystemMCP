@@ -2,9 +2,27 @@ using System.Text;
 
 namespace FilesystemMcp;
 
-// Minimal FS-03 prerequisite: strict format-preserving mutation representation.
+internal enum TextClass { Text, Binary, UnsupportedEncoding }
+
+internal readonly record struct TextClassResult(TextClass Class, TextDocument? Document);
+
+// Minimal FS-03 representation: strict decoding plus a normalized-offset map.
+// FS-09 should call Classify/ClassifyAsync/ParseAsync. SearchTool match/skip stays on its
+// current NUL probe and permissive UTF-8 reader until that epoch.
 internal sealed class TextDocument
 {
+    private const int ParseChunkBytes = 4096;
+    private static readonly UTF8Encoding Utf8 = new(false, true);
+    private static readonly UnicodeEncoding Utf16Le = new(false, true, true);
+    private static readonly UnicodeEncoding Utf16Be = new(true, true, true);
+    private static readonly UTF32Encoding Utf32Le = new(false, true, true);
+    private static readonly UTF32Encoding Utf32Be = new(true, true, true);
+    private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
+    private static readonly byte[] Utf16LeBom = [0xFF, 0xFE];
+    private static readonly byte[] Utf16BeBom = [0xFE, 0xFF];
+    private static readonly byte[] Utf32LeBom = [0xFF, 0xFE, 0x00, 0x00];
+    private static readonly byte[] Utf32BeBom = [0x00, 0x00, 0xFE, 0xFF];
+
     internal string Text { get; }
     internal string Canonical { get; }
     private readonly Encoding _encoding;
@@ -32,20 +50,47 @@ internal sealed class TextDocument
 
     internal static TextDocument Decode(byte[] bytes)
     {
-        Encoding encoding = new UTF8Encoding(false, true);
-        var skip = 0;
-        if (bytes.AsSpan().StartsWith(new byte[] { 255, 254, 0, 0 })) { encoding = new UTF32Encoding(false, true, true); skip = 4; }
-        else if (bytes.AsSpan().StartsWith(new byte[] { 0, 0, 254, 255 })) { encoding = new UTF32Encoding(true, true, true); skip = 4; }
-        else if (bytes.AsSpan().StartsWith(new byte[] { 255, 254 })) { encoding = new UnicodeEncoding(false, true, true); skip = 2; }
-        else if (bytes.AsSpan().StartsWith(new byte[] { 254, 255 })) { encoding = new UnicodeEncoding(true, true, true); skip = 2; }
-        else if (bytes.AsSpan().StartsWith(new byte[] { 239, 187, 191 })) skip = 3;
-        try
+        ArgumentNullException.ThrowIfNull(bytes);
+        var (encoding, bomLength) = Signature(bytes);
+        return DecodePayload(encoding, bomLength == 0 ? [] : bytes[..bomLength], bytes.AsSpan(bomLength));
+    }
+
+    // Short reads are concatenated before the signature is chosen, so a BOM split
+    // across 1–3 byte chunks is still recognized. The strict decoder then runs on
+    // the whole payload; an incomplete trailing sequence fails closed.
+    internal static async Task<TextDocument> ParseAsync(Stream stream, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var pending = new MemoryStream();
+        var buffer = new byte[ParseChunkBytes];
+        while (true)
         {
-            var text = encoding.GetString(bytes, skip, bytes.Length - skip);
-            if (skip == 0 && text.Contains('\0')) throw new MutationException("binary_file", "Binary file cannot be mutated as text.");
-            return new(text, encoding, bytes[..skip]);
+            var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken);
+            if (read == 0) break;
+            pending.Write(buffer, 0, read);
         }
-        catch (DecoderFallbackException) { throw new MutationException("unsupported_encoding", "Invalid or unsupported text encoding."); }
+        return Decode(pending.ToArray());
+    }
+
+    // Binary policy is separate from strict decoding. Do not treat a raw NUL scan as
+    // a substitute for decoding a BOM encoding: valid UTF-16/UTF-32 text contains NUL
+    // bytes. A decoded U+0000 is binary_file only for UTF-8 without a BOM. Invalid
+    // sequences are unsupported_encoding and are never replaced with U+FFFD.
+    internal static TextClassResult Classify(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        try { return new(TextClass.Text, Decode(bytes)); }
+        catch (MutationException ex) when (ex.Code == "binary_file") { return new(TextClass.Binary, null); }
+        catch (MutationException ex) when (ex.Code == "unsupported_encoding") { return new(TextClass.UnsupportedEncoding, null); }
+    }
+
+    internal static async Task<TextClassResult> ClassifyAsync(Stream stream, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        try { return new(TextClass.Text, await ParseAsync(stream, cancellationToken)); }
+        catch (MutationException ex) when (ex.Code == "binary_file") { return new(TextClass.Binary, null); }
+        catch (MutationException ex) when (ex.Code == "unsupported_encoding") { return new(TextClass.UnsupportedEncoding, null); }
     }
 
     internal (string Canonical, byte[] Bytes) Replace(string target, string replacement)
@@ -63,16 +108,56 @@ internal sealed class TextDocument
         return (Decode(result).Canonical, result);
     }
 
+    private static TextDocument DecodePayload(Encoding encoding, byte[] bom, ReadOnlySpan<byte> payload)
+    {
+        try
+        {
+            var text = encoding.GetString(payload);
+            if (bom.Length == 0 && text.Contains('\0')) throw new MutationException("binary_file", "Binary file cannot be mutated as text.");
+            return new TextDocument(text, encoding, bom);
+        }
+        catch (DecoderFallbackException) { throw new MutationException("unsupported_encoding", "Invalid or unsupported text encoding."); }
+    }
+
+    private static (Encoding Encoding, int BomLength) Signature(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length >= 4 && bytes.StartsWith(Utf32LeBom)) return (Utf32Le, 4);
+        if (bytes.Length >= 4 && bytes.StartsWith(Utf32BeBom)) return (Utf32Be, 4);
+        if (bytes.Length >= 2 && bytes.StartsWith(Utf16LeBom)) return (Utf16Le, 2);
+        if (bytes.Length >= 2 && bytes.StartsWith(Utf16BeBom)) return (Utf16Be, 2);
+        if (bytes.Length >= 3 && bytes.StartsWith(Utf8Bom)) return (Utf8, 3);
+        return (Utf8, 0);
+    }
+
     private static string? LineStyle(string text)
     {
-        var styles = new Dictionary<string, int>();
+        var crlf = 0; var lf = 0; var cr = 0;
+        var crlfAt = int.MaxValue; var lfAt = int.MaxValue; var crAt = int.MaxValue;
         for (var i = 0; i < text.Length; i++)
         {
-            string? style = null;
-            if (text[i] == '\r') { style = "\r"; if (i + 1 < text.Length && text[i + 1] == '\n') { style = "\r\n"; i++; } }
-            else if (text[i] == '\n') style = "\n";
-            if (style is not null) styles[style] = styles.GetValueOrDefault(style) + 1;
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
+            {
+                if (crlf++ == 0) crlfAt = i;
+                i++;
+            }
+            else if (text[i] == '\n') { if (lf++ == 0) lfAt = i; }
+            else if (text[i] == '\r') { if (cr++ == 0) crAt = i; }
         }
-        return styles.OrderByDescending(item => item.Value).Select(item => item.Key).FirstOrDefault();
+
+        string? best = null;
+        var bestCount = 0;
+        var bestIndex = int.MaxValue;
+        Consider("\r\n", crlf, crlfAt);
+        Consider("\n", lf, lfAt);
+        Consider("\r", cr, crAt);
+        return best;
+
+        void Consider(string style, int count, int index)
+        {
+            if (count > bestCount || (count == bestCount && count > 0 && index < bestIndex))
+            {
+                best = style; bestCount = count; bestIndex = index;
+            }
+        }
     }
 }

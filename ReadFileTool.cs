@@ -38,7 +38,7 @@ internal sealed class ReadFileTool : IMcpTool
 
     public string Name => "read_file";
     public string Description =>
-        "Reads a text file (UTF-8/UTF-16 with BOM). Returns text and md5/sha256 hashes of the full normalized file. "
+        "Reads a text file (UTF-8 with or without BOM; UTF-16/UTF-32 LE/BE with BOM). Invalid encodings are rejected. Returns text and md5/sha256 hashes of the full normalized file. "
         + "Path argument: path, filePath, or file_path (one required). "
         + "Default full-file limit is 1000 lines; set allow_large_read=true to read more (optionally with max_lines). "
         + "Always use before replace_in_file.";

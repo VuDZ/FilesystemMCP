@@ -19,8 +19,14 @@ internal static class FileTextHelper
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var bytes = await File.ReadAllBytesAsync(resolvedPath, cancellationToken);
-        return TextDocument.Decode(bytes).Text;
+        await using var stream = new FileStream(
+            resolvedPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return (await TextDocument.ParseAsync(stream, cancellationToken)).Text;
     }
     public static (string Text, int TotalLines) ExtractRequestedContent(
         string canonicalContent,

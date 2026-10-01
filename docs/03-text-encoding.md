@@ -2,6 +2,10 @@
 
 Приоритет: P1. Источники: FileTextHelper, FileService, MutationService.
 
+Статус: выполнено.
+
+Версия реализации: **1.4.0**. Принято независимым ревью в первом раунде.
+
 ## Дефект
 
 Не-UTF-8 без BOM читается permissive UTF-8 с replacement fallback. Windows-1251 кириллица превращается в U+FFFD и закрепляется записью. Patch UTF-16 BOM + CRLF преобразует весь файл в UTF-8 no BOM + LF.
@@ -26,3 +30,17 @@ TextEncodingTests: CP1251 rejected; UTF-8 BOM, UTF-16/UTF-32 LE/BE BOM и CRLF �
 Дополнить: invalid UTF-8/UTF-16/UTF-32 в начале и конце, BOM split на границе buffer, mixed EOL, CR-only, empty/BOM-only файл, trailing newline, replacement с многострочным текстом, hash parity между read/search parser. Ошибка encoder до commit сохраняет оригинал FS-02.
 
 Unicode normalization имён не входит в исправление; InvariantGlobalization не менять без отдельного failing repro. Зависимости: FS-02/05.
+
+## Реализованный контракт
+
+`TextDocument` — общий strict parser чтения и будущих вызовов FS-09. `Decode(byte[])` разбирает уже собранный буфер. `ParseAsync(Stream)` сначала склеивает короткие `Read`, и только потом выбирает подпись: BOM, разрезанный между чтениями (в том числе по 1–3 байта), не теряется. Неполная хвостовая sequence отклоняется строгим decoder, без подстановки U+FFFD. `Classify` / `ClassifyAsync` отдельно сообщают `Text`, `Binary` или `UnsupportedEncoding`.
+
+Поддержаны UTF-8 без BOM и с BOM, UTF-16 LE/BE BOM, UTF-32 LE/BE BOM. Экземпляры кодировок создаются с `throwOnInvalidBytes: true`. `DecoderFallbackException` становится `unsupported_encoding`. `hash_conflict`, `target_not_found`, `binary_file` и отмена не перехватываются. Без BOM принимается только валидный UTF-8. CP1251 и UTF-16 без BOM не угадываются; это B-09.
+
+Сырой NUL не заменяет декодирование BOM-кодировок: в валидном UTF-16/UTF-32 такие байты обычны, и при корректной подписи файл остаётся текстом. Декодированный U+0000 в UTF-8 без BOM — `binary_file`.
+
+Документ хранит исходный текст, encoding, байты BOM и карту normalized offset → исходный span. Поиск и locking hash считают `FileTextHelper.ComputeContentHashes` от всего LF-нормализованного текста без BOM; range read хеширует тот же целый текст. Незатронутые spans, их переводы строк и BOM остаются теми же байтами. Вставленный normalized snippet берёт стиль заменяемого span; если в span нет переносов — преобладающий стиль файла; при равенстве счётчиков — первый встретившийся стиль, а не порядок словаря; файл без переносов — LF.
+
+Create без отдельной настройки пишет UTF-8 без BOM и не переписывает переданные переводы строк. Если supplied text начинается с U+FEFF, эти байты становятся физической UTF-8 BOM, а success hash исключает её так же, как последующее чтение. Encoder завершается в `Replace` до создания temp; сбой encoder/decoder до commit не меняет исходные bytes.
+
+FS-09 должен вызывать `ClassifyAsync` / `ParseAsync`. `SearchTool.IsTextFileAsync` и `CollectMatchesAsync` в этой эпохе не переключены: поиск по-прежнему отбрасывает любой сырой NUL до BOM и читает permissive UTF-8. `SearchEncodingTests` для UTF-16/UTF-32 остаются KnownDefect. Нормализация имён NFC/NFD и `InvariantGlobalization` не менялись.
