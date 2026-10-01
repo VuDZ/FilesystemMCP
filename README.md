@@ -279,3 +279,11 @@ dotnet publish -c Release
 - `original_hash` (string, required) - хеш актуального состояния файла
 
 </details>
+
+### План доработок и тесты / Development
+
+- [Спецификации исправлений FS-01…FS-13](docs/README.md)
+- [Backlog остальных улучшений](docs/backlog.md)
+- [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
+
+Спецификации описывают запланированные изменения. Тесты KnownDefect проверяют ожидаемое исправленное поведение и до реализации исправлений падают; Baseline содержит контрольные сценарии.

@@ -18,5 +18,7 @@
   <ItemGroup>
     <!-- Legacy file guard: protocol context is defined in McpProtocol.cs -->
     <Compile Remove="McpJsonContext.cs" />
+    <Compile Remove="FilesystemMcp.Tests/**/*.cs" />
+    <InternalsVisibleTo Include="FilesystemMcp.Tests" />
   </ItemGroup>
 </Project>

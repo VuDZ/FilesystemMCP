@@ -1,0 +1,43 @@
+# План исправлений FilesystemMcp
+
+Статус: спецификации, реализация исправлений ещё не выполнена. Основание — аудит версии 1.1.2 от 2026-10-01. Номера FS-01…FS-13 соответствуют пунктам 1…13 аудита.
+
+## Спецификации
+
+| ID | Приоритет | Исправление | Тестовый класс |
+|---|---|---|---|
+| [FS-01](01-workspace-links.md) | P1 | Workspace jail и allowSymLinks=false | WorkspaceLinksTests |
+| [FS-02](02-atomic-writes.md) | P1 | Атомарная запись и конфликты | AtomicWritesTests |
+| [FS-03](03-text-encoding.md) | P1 | Строгий decoder и сохранение формата | TextEncodingTests |
+| [FS-04](04-file-locks.md) | P1 | Занятые файлы и неполный поиск | FileLocksTests |
+| [FS-05](05-tool-errors.md) | P1 | Диагностика ошибок tools | ToolErrorsTests |
+| [FS-06](06-fail-safe-logging.md) | P1 | Отказоустойчивое логирование | LoggingTests |
+| [FS-07](07-resource-budgets.md) | P1 | Лимиты, cancellation, отзывчивость | ResourceBudgetsTests |
+| [FS-08](08-installer-merge.md) | P1 | Безопасная установка | InstallerTests |
+| [FS-09](09-search-encoding.md) | P2 | Поиск по UTF-16/UTF-32 | SearchEncodingTests |
+| [FS-10](10-read-fidelity.md) | P2 | Строки и явная неполнота ответа | ReadFidelityTests |
+| [FS-11](11-empty-replacement.md) | P2 | Пустые/whitespace snippets | EmptyReplacementTests |
+| [FS-12](12-unified-api.md) | P2 | Один API и общая реализация | UnifiedApiTests |
+| [FS-13](13-protocol-errors.md) | P2 | JSON-RPC и negotiation | ProtocolTests |
+
+## Общие договорённости
+
+- Настройки — immutable ServerOptions, задаваемые при запуске. Первый аргумент остаётся workspace; новые аргументы имеют форму --name=value. Неизвестные имена, неверные boolean/numeric значения и дубликаты — ошибка запуска в stderr и ненулевой exit code. stdout содержит только protocol frames. Конфигурация не меняется через tools/call.
+- allowSymLinks — точное имя boolean-настройки, default false; --allowSymLinks=true включает её явно.
+- Ошибки выполнения tool: result.isError=true, content[0].text — JSON с code, message и при необходимости безопасными деталями. Ошибки формы протокола/аргументов: JSON-RPC error. Клиент не должен разбирать текст exception.
+- Для read/list/search результаты — JSON object в text content; при поддержке structuredContent тот же object. Изменение search/list с array на object — изменение контракта, требующее версии и обновления README/client samples.
+- FS-12 сохраняет пять текущих стандартных tools и удаляет прямые custom RPC методы. append не реализуется в этом цикле; его рекомендации удаляются.
+- Новые публичные error codes, metadata и CLI options документируются вместе с реализацией. Не заявлять поддержку MCP-версий без protocol tests.
+- Unicode-пути не перекодируются в ANSI и не нормализуются NFC/NFD автоматически.
+
+## Тесты и порядок реализации
+
+Отдельный проект: ../FilesystemMcp.Tests. [Инструкции запуска и статус покрытия](../FilesystemMcp.Tests/README.md).
+
+Тесты с Status=KnownDefect проверяют желаемое поведение и сейчас могут падать. Они не пропускаются и не ожидают ошибочного поведения. Фильтр Baseline отделяет контрольные проверки. После реализации соответствующей спеки снять KnownDefect у исправленных тестов и расширить покрытие её матрицы; целевой gate — весь проект без фильтра.
+
+Порядок: FS-05/06 → FS-01 → FS-02/03 → FS-04/09 → FS-07 → FS-10/11/12/13 и FS-08 независимо. Параллелизм FS-07 включать после защиты записи FS-02.
+
+Наличие текущих тестов не означает полного покрытия: fault injection, ACL, гонки, cancellation и AOT перечислены в спеках как обязательные дополнительные проверки перед закрытием соответствующего пункта.
+
+Вне этого цикла: [backlog.md](backlog.md).

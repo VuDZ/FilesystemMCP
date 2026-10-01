@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <PublishAot>false</PublishAot>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <ProjectReference Include="../FilesystemMCP.csproj" AdditionalProperties="PublishAot=false;PublishTrimmed=false" />
+    <ProjectReference Include="TestHost/FilesystemMcp.TestHost.csproj" ReferenceOutputAssembly="false" />
+    <Compile Remove="TestHost/**/*.cs" />
+    <None Include="../install2opencode.ps1" Link="assets/install2opencode.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../AGENTS.md.sample" Link="assets/AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CopyServerForProtocolTests" AfterTargets="Build">
+    <ItemGroup>
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMcp.TestHost.dll" />
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMcp.TestHost.deps.json" />
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMcp.TestHost.runtimeconfig.json" />
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMcp.TestHost.pdb" />
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMCP.dll" />
+      <ServerArtifact Include="TestHost/bin/$(Configuration)/net10.0/FilesystemMCP.pdb" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ServerArtifact)" DestinationFolder="$(OutDir)server" />
+  </Target>
+</Project>
