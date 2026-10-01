@@ -113,26 +113,9 @@ internal sealed class FileService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
-        var resolvedPath = _policy.Resolve(path);
-        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
-        FileTextHelper.EnsureHashMatches(originalHash, canonicalContent);
-
-        var normalizedTarget = FileTextHelper.NormalizeLineEndings(targetSnippet);
-        var normalizedReplacement = FileTextHelper.NormalizeLineEndings(replacementSnippet);
-
-        var targetIndex = canonicalContent.IndexOf(normalizedTarget, StringComparison.Ordinal);
-        if (targetIndex < 0)
-        {
-            throw new ArgumentException("Target snippet not found in the file. Ensure you copied the exact code block.");
-        }
-
-        var updatedText = ReplaceFirst(canonicalContent, normalizedTarget, normalizedReplacement, targetIndex);
-        await NativePath.WriteAsync(_policy, path, resolvedPath, updatedText, false, cancellationToken);
-
-        var (_, newSha256) = FileTextHelper.ComputeContentHashes(updatedText);
-        return (updatedText, newSha256);
+        var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
+        return (result.Text, result.Sha256);
     }
-
     private static void ValidateLineRange(int? startLine, int? endLine)
     {
         if (!startLine.HasValue && !endLine.HasValue)

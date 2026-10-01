@@ -22,7 +22,8 @@ internal sealed class ServerProcess : IAsyncDisposable
     }
 
     public static async Task<ServerProcess> StartAsync(string workspace, string[]? options = null,
-        string? executable = null, bool initialize = true, string? workingDirectory = null)
+        string? executable = null, bool initialize = true, string? workingDirectory = null,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         executable ??= DefaultExecutable;
         var isDll = executable.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
@@ -33,6 +34,7 @@ internal sealed class ServerProcess : IAsyncDisposable
             StandardInputEncoding = Sandbox.Utf8, StandardOutputEncoding = Sandbox.Utf8, StandardErrorEncoding = Sandbox.Utf8
         };
         if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
+        foreach (var pair in environment ?? new Dictionary<string, string>()) info.Environment[pair.Key] = pair.Value;
         if (isDll) info.ArgumentList.Add(executable);
         info.ArgumentList.Add(workspace);
         foreach (var option in options ?? []) info.ArgumentList.Add(option);

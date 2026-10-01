@@ -5,6 +5,7 @@ namespace FilesystemMcp;
 
 internal static class Program
 {
+    internal static AtomicWriteDependencies? AtomicWritesForHost { get; set; }
     private const string DefaultProtocolVersion = "2024-11-05";
     private const string ServerName = "FilesystemMCP";
     private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
@@ -21,6 +22,7 @@ internal static class Program
         {
             var (workspace, options) = ServerOptions.Parse(args);
             policy = new PathPolicy(workspace, options);
+            if (AtomicWritesForHost is not null) policy.AtomicWrites = AtomicWritesForHost;
         }
         catch (Exception ex)
         {
@@ -58,6 +60,10 @@ internal static class Program
                 response = await ProcessRequestAsync(request, fileService, mutationService, policy, toolRegistry);
             }
             catch (PathPolicyException ex)
+            {
+                response = CreateErrorResponse(request?.Id, -32001, ex.Code);
+            }
+            catch (MutationException ex)
             {
                 response = CreateErrorResponse(request?.Id, -32001, ex.Code);
             }
@@ -191,6 +197,12 @@ internal static class Program
         catch (PathPolicyException ex)
         {
             var text = "{\"code\":\"" + ex.Code + "\",\"message\":\"" + ex.Message + "\"}";
+            var result = new ToolsCallResult(new[] { new ToolCallContent("text", text) }, true);
+            return CreateResultResponse(request.Id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
+        }
+        catch (MutationException ex)
+        {
+            var text = JsonSerializer.Serialize(new ToolOperationError(ex.Code, ex.Message), McpJsonContext.Default.ToolOperationError);
             var result = new ToolsCallResult(new[] { new ToolCallContent("text", text) }, true);
             return CreateResultResponse(request.Id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
         }

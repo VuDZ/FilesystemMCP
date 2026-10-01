@@ -6,18 +6,19 @@ namespace FilesystemMcp.Tests;
 [Trait("Spec", "FS-03")]
 public sealed class TextEncodingTests
 {
-    [Fact, Trait("Status", "KnownDefect")]
+    [Fact, Trait("Status", "Baseline")]
     public async Task InvalidUtf8IsRejectedWithoutReplacingCyrillicWithReplacementCharacters()
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("cp1251.txt", "");
         byte[] original = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0x74, 0x6F, 0x6B, 0x65, 0x6E];
         await File.WriteAllBytesAsync(path, original);
-        await Assert.ThrowsAnyAsync<Exception>(() => new FileService(sandbox.Workspace).ReadFileAsync("cp1251.txt", new()));
+        var error = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReadFileAsync("cp1251.txt", new()));
+        Assert.Equal("unsupported_encoding", error.Code);
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
     }
 
-    [Theory, Trait("Status", "KnownDefect")]
+    [Theory, Trait("Status", "Baseline")]
     [InlineData("utf8bom"), InlineData("utf16le"), InlineData("utf16be"), InlineData("utf32le"), InlineData("utf32be")]
     public async Task PatchPreservesEncodingBomAndCrLf(string encodingName)
     {

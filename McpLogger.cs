@@ -4,7 +4,13 @@ namespace FilesystemMcp;
 
 internal static class McpLogger
 {
-    public static void LogInfo(string message)
+    // FS-02 prerequisite: diagnostics cannot turn a committed mutation into failure.
+    public static void LogInfo(string message) { try { LogInfoCore(message); } catch { } }
+    public static void LogError(string message, Exception? ex = null) { try { LogErrorCore(message, ex); } catch { } }
+    public static void LogToolInvoke(string name, JsonElement arguments) { try { LogToolInvokeCore(name, arguments); } catch { } }
+    public static void LogToolComplete(string name, TimeSpan elapsed, bool success, string? detail = null)
+    { try { LogToolCompleteCore(name, elapsed, success, detail); } catch { } }
+    private static void LogInfoCore(string message)
     {
         var formattedMsg = $"[{DateTime.UtcNow:s}] [INFO] {message}";
 
@@ -36,20 +42,20 @@ internal static class McpLogger
         }
     }
 
-    public static void LogToolInvoke(string toolName, JsonElement arguments)
+    private static void LogToolInvokeCore(string toolName, JsonElement arguments)
     {
         var sanitizedArgs = LogSanitizer.SanitizeForLog(arguments);
         LogInfo($"Tool invoke: {toolName} args={sanitizedArgs}");
     }
 
-    public static void LogToolComplete(string toolName, TimeSpan elapsed, bool success, string? detail = null)
+    private static void LogToolCompleteCore(string toolName, TimeSpan elapsed, bool success, string? detail = null)
     {
         var status = success ? "ok" : "failed";
         var suffix = string.IsNullOrWhiteSpace(detail) ? string.Empty : $" ({detail})";
         LogInfo($"Tool done: {toolName} status={status} elapsedMs={elapsed.TotalMilliseconds:F0}{suffix}");
     }
 
-    public static void LogError(string message, Exception? ex = null)
+    private static void LogErrorCore(string message, Exception? ex = null)
     {
         var formattedMsg = $"[{DateTime.Now:s}] [ERROR] {message}";
         if (ex is not null)

@@ -1,13 +1,13 @@
 # План исправлений FilesystemMcp
 
-Статус: FS-01 реализован и принят независимым ревью в третьем раунде (версия 1.2.0); остальные исправления ещё не выполнены. Основание — аудит версии 1.1.2 от 2026-10-01. Номера FS-01…FS-13 соответствуют пунктам 1…13 аудита.
+Статус: FS-01 реализован и принят независимым ревью в третьем раунде (версия 1.2.0); FS-02 принят независимым ревью в первом раунде (версия 1.3.0); остальные исправления ещё не приняты. Основание — аудит версии 1.1.2 от 2026-10-01. Номера FS-01…FS-13 соответствуют пунктам 1…13 аудита.
 
 ## Спецификации
 
 | ID | Приоритет | Исправление | Тестовый класс |
 |---|---|---|---|
 | [FS-01](01-workspace-links.md) | P1 | Логическая граница workspace, allowSymLinks=true по умолчанию и strict false | WorkspaceLinksTests / WorkspaceLinksAcceptanceTests |
-| [FS-02](02-atomic-writes.md) | P1 | Атомарная запись и конфликты | AtomicWritesTests |
+| [FS-02](02-atomic-writes.md) | P1 | Атомарная запись и конфликты | AtomicWritesTests / AtomicWriteAcceptanceTests |
 | [FS-03](03-text-encoding.md) | P1 | Строгий decoder и сохранение формата | TextEncodingTests |
 | [FS-04](04-file-locks.md) | P1 | Занятые файлы и неполный поиск | FileLocksTests |
 | [FS-05](05-tool-errors.md) | P1 | Диагностика ошибок tools | ToolErrorsTests |
@@ -21,6 +21,8 @@
 | [FS-13](13-protocol-errors.md) | P2 | JSON-RPC и negotiation | ProtocolTests |
 
 ## Общие договорённости
+
+- После завершения и приёмки каждой спецификации в ней явно указывать `Статус: выполнено.` и `Версия реализации: x.y.z.`.
 
 - Настройки — immutable ServerOptions, задаваемые при запуске. Первый аргумент остаётся workspace; новые аргументы имеют форму --name=value. Неизвестные имена, неверные boolean/numeric значения и дубликаты — ошибка запуска в stderr и ненулевой exit code. stdout содержит только protocol frames. Конфигурация не меняется через tools/call.
 - allowSymLinks — точное имя boolean-настройки, default true по override пользователя; --allowSymLinks=false включает strict jail без ссылок. True разрешает внешние цели ссылок внутри workspace; прямой outside absolute/../ входной маршрут запрещён в обоих режимах.

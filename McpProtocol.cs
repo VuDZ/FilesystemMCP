@@ -128,6 +128,9 @@ internal sealed record ToolsCallResult(
     [property: JsonPropertyName("content")] IReadOnlyList<ToolCallContent> Content,
     [property: JsonPropertyName("isError")] bool IsError);
 
+internal sealed record ToolOperationError(string Code, string Message);
+internal sealed record CreateFileToolResult(string Status, string Md5, string Sha256);
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -158,6 +161,8 @@ internal sealed record ToolsCallResult(
 [JsonSerializable(typeof(ToolsListResult))]
 [JsonSerializable(typeof(ToolCallContent))]
 [JsonSerializable(typeof(ToolsCallResult))]
+[JsonSerializable(typeof(ToolOperationError))]
+[JsonSerializable(typeof(CreateFileToolResult))]
 internal partial class McpJsonContext : JsonSerializerContext
 {
 }

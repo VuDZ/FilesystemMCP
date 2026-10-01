@@ -2,7 +2,11 @@
 
 Приоритет: P1. Источники: WorkspaceJail.cs, SearchTool.cs, все path-based tools и startup Program.cs.
 
-Статус: реализация и regression matrix обновлены по уточнению пользователя; принято независимым ревью в третьем раунде; самостоятельный выпуск 1.2.0. Пользовательский override: ссылки включены по умолчанию и могут вести наружу, но доступны через входной путь внутри workspace. `ServerOptions` задаёт immutable настройку, единый `PathPolicy` используется tools и legacy API. Запись проходит повторную policy-проверку и выполняется через открытые handles (`NtCreateFile` относительно закреплённых Windows родителей; Unix `openat`/`O_NOFOLLOW`), без последующего поиска leaf по имени при truncation/write. Windows проверяет окончательный физический путь anchor handle; Unix сверяет dev/inode закреплённых и текущих родителей перед открытием leaf и перед truncation. Отказ безопасного открытия — `path_changed`; неподдерживаемая OS/ABI — `unsupported_safe_write`. Корень/существующий каталог вместо файла — `path_is_directory`, без создания ошибочного дочернего файла.
+Статус: выполнено.
+
+Версия реализации: **1.2.0**. Принято независимым ревью в третьем раунде.
+
+Реализация и regression matrix обновлены по уточнению пользователя. Пользовательский override: ссылки включены по умолчанию и могут вести наружу, но доступны через входной путь внутри workspace. `ServerOptions` задаёт immutable настройку, единый `PathPolicy` используется tools и legacy API. Запись проходит повторную policy-проверку и выполняется через открытые handles (`NtCreateFile` относительно закреплённых Windows родителей; Unix `openat`/`O_NOFOLLOW`), без последующего поиска leaf по имени при атомарной публикации. Windows проверяет окончательный физический путь anchor handle; Unix сверяет dev/inode закреплённых и текущих родителей перед открытием leaf и перед атомарной публикацией. Отказ безопасного открытия — `path_changed`; неподдерживаемая OS/ABI — `unsupported_safe_write`. Корень/существующий каталог вместо файла — `path_is_directory`, без создания ошибочного дочернего файла.
 
 Контракт list: object с `entries`, тип ссылки `link`. Search: object с `matches`, `skipped` (relative path + code), `incomplete`; `already_visited` отмечает повторную физическую директорию. Link codes: `symlink_not_allowed`, `path_outside_workspace`, `symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`. Подробнее — [README](../README.md#workspace-links-and-result-contracts).
 

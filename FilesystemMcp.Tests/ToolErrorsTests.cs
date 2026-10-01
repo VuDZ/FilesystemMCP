@@ -14,7 +14,7 @@ public sealed class ToolErrorsTests
         McpAssert.ToolError(reply, "file_not_found");
     }
 
-    [Fact, Trait("Status", "KnownDefect")]
+    [Fact, Trait("Status", "Baseline")]
     public async Task StaleHashHasConflictCodeAndDoesNotWrite()
     {
         using var sandbox = new Sandbox();

@@ -7,6 +7,8 @@ internal sealed class ToolRegistry
     private readonly Dictionary<string, IMcpTool> _tools = new(StringComparer.Ordinal);
     private JsonElement _cachedToolsList;
     private bool _isToolsListCached;
+    internal Action<string, TimeSpan, bool, string?> CompletionLog { get; set; } =
+        (name, elapsed, success, detail) => McpLogger.LogToolComplete(name, elapsed, success, detail);
 
     public void Register(IMcpTool tool)
     {
@@ -48,20 +50,20 @@ internal sealed class ToolRegistry
             throw new InvalidOperationException("Tool not found");
         }
 
-        McpLogger.LogToolInvoke(name, arguments);
+        try { McpLogger.LogToolInvoke(name, arguments); } catch { }
         var startedAt = Environment.TickCount64;
 
         try
         {
             var result = await tool.ExecuteAsync(arguments);
             var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAt);
-            McpLogger.LogToolComplete(name, elapsed, success: true, detail: $"resultChars={result.Length}");
+            try { CompletionLog(name, elapsed, true, $"resultChars={result.Length}"); } catch { }
             return result;
         }
         catch (Exception ex)
         {
             var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAt);
-            McpLogger.LogToolComplete(name, elapsed, success: false, detail: ex.Message);
+            try { CompletionLog(name, elapsed, false, ex.Message); } catch { }
             throw;
         }
     }

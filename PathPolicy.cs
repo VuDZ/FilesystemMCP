@@ -13,6 +13,7 @@ internal sealed class PathPolicy
     public static StringComparer Comparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     internal Action? BeforeWriteCommit { get; set; }
     internal Action? AfterWriteParentsPinned { get; set; }
+    internal AtomicWriteDependencies AtomicWrites { get; set; } = new();
 
     public PathPolicy(string workspaceRoot, ServerOptions? options = null)
     {

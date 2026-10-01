@@ -5,7 +5,7 @@ namespace FilesystemMcp.Tests;
 [Trait("Spec", "FS-02")]
 public sealed class AtomicWritesTests
 {
-    [Fact, Trait("Status", "KnownDefect")]
+    [Fact, Trait("Status", "Baseline")]
     public async Task CancelledWritePreservesOriginalBytes()
     {
         using var sandbox = new Sandbox();
@@ -26,7 +26,8 @@ public sealed class AtomicWritesTests
         var files = new FileService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await File.WriteAllTextAsync(path, "external", Sandbox.Utf8);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => files.ReplaceInFileAsync("file.txt", "old", "new", read.Sha256));
+        var error = await Assert.ThrowsAsync<MutationException>(() => files.ReplaceInFileAsync("file.txt", "old", "new", read.Sha256));
+        Assert.Equal("hash_conflict", error.Code);
         Assert.Equal("external", await File.ReadAllTextAsync(path));
     }
 }

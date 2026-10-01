@@ -49,14 +49,7 @@ internal sealed class CreateFileTool : IMcpTool
         }
 
         var content = contentNode.GetString() ?? string.Empty;
-        var resolved = _policy.Resolve(path);
-        if (File.Exists(resolved))
-        {
-            throw new InvalidOperationException("File already exists. Use replace_in_file.");
-        }
-
-        await NativePath.WriteAsync(_policy, path, resolved, content, true);
-
-        return "{\"status\":\"success\"}";
+        var result = await AtomicFileWriter.WriteTextAsync(_policy, path, content, true);
+        return JsonSerializer.Serialize(new CreateFileToolResult("success", result.Md5, result.Sha256), McpJsonContext.Default.CreateFileToolResult);
     }
 }

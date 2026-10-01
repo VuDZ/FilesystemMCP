@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.2.0
+**Version:** 1.3.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -52,7 +52,11 @@ Windows drive/root-changing components such as `dummy/C:outside` are rejected in
 
 Path errors in `tools/call` return `result.isError=true` and JSON text with `code` and `message`. Codes added for paths are `symlink_not_allowed`, `path_outside_workspace`, `symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`, `path_changed`, `unsupported_safe_write`, and `path_is_directory` (root/existing directory used as a file). Legacy direct path methods use JSON-RPC error `-32001` with the same code in `message` until FS-12 removes them. Other operational error mapping is tracked by FS-05.
 
-Writes recheck policy before committing and use directory/leaf handles: Windows verifies the physical anchor handle, pins directories against write/delete sharing, and opens children relative to those handles with reparse following disabled. Allowed external targets use their existing physical parent as the anchor. 64-bit Linux/macOS use `openat` with `O_NOFOLLOW` and compare pinned/live parent dev/inode identities before opening the leaf and before truncation. Unsupported platforms/scenarios fail closed. Root/existing-directory file writes are rejected before mutation. These guards prevent replacement links and detected parent identity swaps from redirecting a write; FS-02 atomic writes and crash recovery remain separate. Hard links and Windows case-sensitive directory semantics remain backlog limitations. A complete OS sandbox guarantee against arbitrary concurrent renames, including renames after commit, is not claimed.
+Writes recheck policy before committing and use directory/leaf handles: Windows verifies the physical anchor handle, pins directories against delete sharing, and opens children relative to those handles with reparse following disabled. Atomic publication uses a handle-relative rename with POSIX replacement semantics; pinned handles are rechecked for reparse changes. Allowed external targets use their existing physical parent as the anchor. 64-bit Linux/macOS use `openat` with `O_NOFOLLOW` and compare pinned/live parent dev/inode identities before opening the leaf and before atomic publication. Unsupported platforms/scenarios fail closed. Root/existing-directory file writes are rejected before mutation. These guards prevent replacement links and detected parent identity swaps from redirecting a write. FS-02 atomic writes are accepted in version 1.3.0: all writers prepare a unique same-directory temp, flush to disk, recheck state, and publish atomically. Atomic replacement changes the selected name to a new inode while other hard links retain old bytes; Windows case-sensitive directory semantics remain a backlog limitation. A complete OS sandbox guarantee against arbitrary concurrent renames, including renames after commit, is not claimed.
+
+Writes are serialized across cooperating local server processes by canonical physical path and file identity. Before commit, changes to bytes, identity or observed metadata return `hash_conflict` without mutation. This fresh check is not an OS compare-and-swap: a noncooperating external writer can still race the check and rename. Replacement preserves encoding/BOM, untouched line endings, ACL/access metadata and attributes; read-only files are rejected. Create retains supplied line endings and returns `status`, `md5`, and `sha256` for the complete normalized stored document (BOM excluded). After commit, late cancellation, logger or cleanup failures keep the successful result; mutations are never automatically retried. Temp data receives `Flush(true)` before publication, but directory/power-loss durability is not guaranteed. See [FS-02 guarantees and limitations](docs/02-atomic-writes.md).
+
+Mutation tool failures use `result.isError=true` with JSON `code`/`message`: `hash_conflict`, `file_exists`, `access_denied`, `unsupported_encoding`, `binary_file`, `target_not_found`, and `file_not_found`. `hash_conflict` requires a fresh read before another patch. These are the prerequisites added for FS-02; the complete FS-05 error table and FS-06 logging configuration/rotation remain planned.
 
 ### Agent & OpenCode Templates
 
@@ -159,7 +163,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.2.0
+**Версия:** 1.3.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -300,4 +304,4 @@ dotnet publish -c Release
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. Зависимости FS-03/05/06 реализованы только в объёме atomic-write prerequisites. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

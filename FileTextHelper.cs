@@ -5,7 +5,6 @@ namespace FilesystemMcp;
 
 internal static class FileTextHelper
 {
-    private const int BinaryProbeLength = 512;
 
     public static async Task<string> ReadCanonicalContentAsync(
         string resolvedPath,
@@ -19,28 +18,10 @@ internal static class FileTextHelper
         string resolvedPath,
         CancellationToken cancellationToken = default)
     {
-        var streamOptions = new FileStreamOptions
-        {
-            Access = FileAccess.Read,
-            Mode = FileMode.Open,
-            Share = FileShare.ReadWrite,
-            Options = FileOptions.SequentialScan
-        };
-
-        await using var stream = new FileStream(resolvedPath, streamOptions);
-        var encoding = await DetectTextEncodingAsync(stream, cancellationToken);
-        stream.Position = 0;
-
-        using var reader = new StreamReader(
-            stream,
-            encoding: encoding,
-            detectEncodingFromByteOrderMarks: false,
-            bufferSize: 4096,
-            leaveOpen: true);
-
-        return await reader.ReadToEndAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var bytes = await File.ReadAllBytesAsync(resolvedPath, cancellationToken);
+        return TextDocument.Decode(bytes).Text;
     }
-
     public static (string Text, int TotalLines) ExtractRequestedContent(
         string canonicalContent,
         int? startLine,
@@ -89,26 +70,14 @@ internal static class FileTextHelper
         return (selected.ToString(), currentLine);
     }
 
-    public static async Task WriteUtf8WithoutBomAsync(
-        string resolvedPath,
-        string content,
+    public static Task WriteUtf8WithoutBomAsync(string resolvedPath, string content,
         CancellationToken cancellationToken = default)
     {
-        await using var stream = new FileStream(
-            resolvedPath,
-            new FileStreamOptions
-            {
-                Access = FileAccess.Write,
-                Mode = FileMode.Create,
-                Share = FileShare.ReadWrite,
-                Options = FileOptions.SequentialScan
-            });
-
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        await writer.WriteAsync(content.AsMemory(), cancellationToken);
-        await writer.FlushAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullPath = Path.GetFullPath(resolvedPath);
+        return AtomicFileWriter.WriteTextAsync(new PathPolicy(Path.GetDirectoryName(fullPath)!),
+            Path.GetFileName(fullPath), content, false, cancellationToken);
     }
-
     public static string NormalizeLineEndings(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
@@ -131,60 +100,8 @@ internal static class FileTextHelper
         var (md5, sha256) = ComputeContentHashes(canonicalContent);
         if (!HashesMatch(originalHash, md5, sha256))
         {
-            throw new InvalidOperationException(
-                "File modified externally. Please use read_file to get the latest state before patching.");
+            throw MutationException.Conflict();
         }
     }
 
-    private static async Task<Encoding> DetectTextEncodingAsync(FileStream stream, CancellationToken cancellationToken)
-    {
-        var probeBuffer = new byte[BinaryProbeLength];
-        var bytesRead = await stream.ReadAsync(probeBuffer.AsMemory(0, BinaryProbeLength), cancellationToken);
-
-        if (bytesRead >= 4
-            && probeBuffer[0] == 0xFF
-            && probeBuffer[1] == 0xFE
-            && probeBuffer[2] == 0x00
-            && probeBuffer[3] == 0x00)
-        {
-            return new UTF32Encoding(bigEndian: false, byteOrderMark: true);
-        }
-
-        if (bytesRead >= 4
-            && probeBuffer[0] == 0x00
-            && probeBuffer[1] == 0x00
-            && probeBuffer[2] == 0xFE
-            && probeBuffer[3] == 0xFF)
-        {
-            return new UTF32Encoding(bigEndian: true, byteOrderMark: true);
-        }
-
-        if (bytesRead >= 2 && probeBuffer[0] == 0xFF && probeBuffer[1] == 0xFE)
-        {
-            return new UnicodeEncoding(bigEndian: false, byteOrderMark: true);
-        }
-
-        if (bytesRead >= 2 && probeBuffer[0] == 0xFE && probeBuffer[1] == 0xFF)
-        {
-            return new UnicodeEncoding(bigEndian: true, byteOrderMark: true);
-        }
-
-        if (bytesRead >= 3
-            && probeBuffer[0] == 0xEF
-            && probeBuffer[1] == 0xBB
-            && probeBuffer[2] == 0xBF)
-        {
-            return new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-        }
-
-        for (var i = 0; i < bytesRead; i++)
-        {
-            if (probeBuffer[i] == 0)
-            {
-                throw new InvalidOperationException("Binary file detected. Cannot read.");
-            }
-        }
-
-        return Encoding.UTF8;
-    }
 }

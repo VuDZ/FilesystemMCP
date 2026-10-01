@@ -4,9 +4,9 @@ using Microsoft.Win32.SafeHandles;
 
 namespace FilesystemMcp;
 
-// Writes never truncate through a name. Windows pins directory handles against
-// write/delete sharing; Unix opens each directory and the leaf relative to its fd.
-internal static class NativePath
+// Windows pins directory handles against delete sharing. Unix opens each
+// directory and the leaf relative to its fd. Publication is in NativeAtomicPath.
+internal static partial class NativePath
 {
     private const uint Reparse = 0x00200000, Backup = 0x02000000;
     internal readonly record struct DirectoryIdentity(ulong Volume, ulong Low, ulong High);
@@ -62,97 +62,13 @@ internal static class NativePath
         ValidateReparseTag(BitConverter.ToUInt32(data));
     }
 
-    public static async Task WriteAsync(PathPolicy policy, string requested, string expected, string content, bool create,
+    public static Task WriteAsync(PathPolicy policy, string requested, string expected, string content, bool create,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        // A directory/root has no file leaf. In particular, '.' must never turn
-        // into a child named after the workspace basename.
-        var leafName = Path.GetFileName(expected);
-        if (PathPolicy.Comparer.Equals(expected, policy.Root) || Directory.Exists(expected)
-            || string.IsNullOrEmpty(leafName) || leafName is "." or "..")
-            throw PathPolicy.Error("path_is_directory");
-        policy.BeforeWriteCommit?.Invoke();
         if (!PathPolicy.Comparer.Equals(policy.Resolve(requested), expected)) throw PathPolicy.Error("path_changed");
-        var handles = new List<SafeFileHandle>();
-        try
-        {
-            SafeFileHandle leaf;
-            if (OperatingSystem.IsWindows())
-            {
-                var anchor = policy.Root;
-                if (policy.Options.AllowSymLinks && !PathPolicy.Contains(anchor, expected))
-                {
-                    anchor = Path.GetDirectoryName(expected)!;
-                    while (!Directory.Exists(anchor))
-                        anchor = Path.GetDirectoryName(anchor) ?? throw PathPolicy.Error("path_changed");
-                }
-                var parent = PinWindowsDirectory(anchor);
-                handles.Add(parent);
-                if (!PathPolicy.Comparer.Equals(FinalWindowsPath(parent), anchor)) throw PathPolicy.Error("path_changed");
-                var relative = Path.GetRelativePath(anchor, expected);
-                if (relative is "." or ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                    throw PathPolicy.Error("path_changed");
-                foreach (var part in (Path.GetDirectoryName(relative) ?? "").Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
-                {
-                    parent = OpenWindowsRelative(parent, part, directory: true, create);
-                    handles.Add(parent);
-                    EnsureNotReparse(parent);
-                }
-                policy.AfterWriteParentsPinned?.Invoke();
-                if (!PathPolicy.Comparer.Equals(policy.Resolve(requested), expected)) throw PathPolicy.Error("path_changed");
-                leaf = OpenWindowsRelative(parent, Path.GetFileName(expected), directory: false, create);
-                EnsureNotReparse(leaf);
-            }
-            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-            {
-                if (IntPtr.Size != 8) throw PathPolicy.Error("unsupported_safe_write");
-                var identities = new List<(SafeFileHandle Handle, string Path)>();
-                var directoryFlags = OperatingSystem.IsLinux() ? 0x10000 | 0x20000 | 0x80000 : 0x100000 | 0x100 | 0x1000000;
-                var fd = Open("/", directoryFlags, 0);
-                if (fd < 0) throw PathPolicy.Error("path_changed");
-                var parent = new SafeFileHandle((IntPtr)fd, true);
-                handles.Add(parent);
-                identities.Add((parent, "/"));
-                var current = "/";
-                foreach (var part in Path.GetDirectoryName(expected)!.Split('/', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    current = Path.Combine(current, part);
-                    fd = OpenAt(parent, part, directoryFlags, 0);
-                    if (fd < 0 && create && Marshal.GetLastPInvokeError() == 2)
-                    {
-                        if (MkdirAt(parent, part, 0x1ED) != 0 && Marshal.GetLastPInvokeError() != 17) throw PathPolicy.Error("path_changed");
-                        fd = OpenAt(parent, part, directoryFlags, 0);
-                    }
-                    if (fd < 0) throw PathPolicy.Error("path_changed");
-                    parent = new SafeFileHandle((IntPtr)fd, true);
-                    handles.Add(parent);
-                    identities.Add((parent, current));
-                }
-                policy.AfterWriteParentsPinned?.Invoke();
-                if (!PathPolicy.Comparer.Equals(policy.Resolve(requested), expected)) throw PathPolicy.Error("path_changed");
-                VerifyUnixIdentities(identities, directoryFlags);
-                var flags = 1 | (OperatingSystem.IsLinux() ? 0x20000 | 0x80000 : 0x100 | 0x1000000);
-                if (create) flags |= OperatingSystem.IsLinux() ? 0x40 | 0x80 : 0x200 | 0x800;
-                fd = OpenAt(parent, Path.GetFileName(expected), flags, 0x1A4);
-                if (fd < 0) throw PathPolicy.Error("path_changed");
-                leaf = new SafeFileHandle((IntPtr)fd, true);
-                try { VerifyUnixIdentities(identities, directoryFlags); }
-                catch { leaf.Dispose(); throw; }
-            }
-            else throw PathPolicy.Error("unsupported_safe_write");
-
-            await using var stream = new FileStream(leaf, FileAccess.Write);
-            // No name lookup is performed after this point, including truncation.
-            cancellationToken.ThrowIfCancellationRequested();
-            stream.SetLength(0);
-            await using var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false));
-            await writer.WriteAsync(content.AsMemory(), cancellationToken);
-            await writer.FlushAsync(cancellationToken);
-        }
-        finally { foreach (var handle in handles.AsEnumerable().Reverse()) handle.Dispose(); }
+        return AtomicFileWriter.WriteTextAsync(policy, requested, content, create, cancellationToken);
     }
-
     private static void VerifyUnixIdentities(IEnumerable<(SafeFileHandle Handle, string Path)> directories, int flags)
     {
         foreach (var (pinned, path) in directories)
@@ -183,7 +99,10 @@ internal static class NativePath
 
     private static SafeFileHandle PinWindowsDirectory(string path)
     {
-        var handle = CreateFile(path, 0xA0, 1, IntPtr.Zero, 3, Reparse | Backup, IntPtr.Zero);
+        // Atomic rename needs the filesystem to open the destination directory
+        // for FILE_ADD_FILE. Deny delete sharing to keep its physical location
+        // pinned; all child lookups/publication remain relative to this handle.
+        var handle = CreateFile(path, 0xA0, 3, IntPtr.Zero, 3, Reparse | Backup, IntPtr.Zero);
         if (handle.IsInvalid) { handle.Dispose(); throw PathPolicy.Error("path_changed"); }
         EnsureNotReparse(handle);
         return handle;
@@ -215,7 +134,7 @@ internal static class NativePath
             Marshal.StructureToPtr(new UnicodeString { Length = checked((ushort)(name.Length * 2)), MaximumLength = checked((ushort)(name.Length * 2 + 2)), Buffer = chars }, stringPointer, false);
             var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(), RootDirectory = parent.DangerousGetHandle(), ObjectName = stringPointer, Attributes = 0x40 };
             var status = NtCreateFile(out var handle, directory ? 0x1000A0u : 0x40100080u, ref attributes, out _, IntPtr.Zero,
-                0x80, 1, create ? (directory ? 3u : 2u) : 1u, 0x200000u | (directory ? 0x21u : 0x20u | 0x40u), IntPtr.Zero, 0);
+                0x80, directory ? 3u : 1u, create ? (directory ? 3u : 2u) : 1u, 0x200000u | (directory ? 0x21u : 0x20u | 0x40u), IntPtr.Zero, 0);
             GC.KeepAlive(parent);
             if (status < 0) { handle?.Dispose(); throw PathPolicy.Error("path_changed"); }
             return handle;
