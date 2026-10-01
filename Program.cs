@@ -13,6 +13,9 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        Console.InputEncoding = new System.Text.UTF8Encoding(false);
+        Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+
         if (args.Length < 1)
         {
             McpLogger.LogError("WorkspaceRoot argument is required.");
