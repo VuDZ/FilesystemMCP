@@ -19,17 +19,12 @@ internal sealed class CreateFileTool : IMcpTool
 }
 """;
 
-    private readonly string _workspaceRoot;
+    private readonly PathPolicy _policy;
+    private string _workspaceRoot => _policy.Root;
 
-    public CreateFileTool(string workspaceRoot)
-    {
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            throw new ArgumentException("WorkspaceRoot must be provided.", nameof(workspaceRoot));
-        }
+    public CreateFileTool(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-        _workspaceRoot = Path.GetFullPath(workspaceRoot);
-    }
+    public CreateFileTool(PathPolicy policy) => _policy = policy;
 
     public string Name => "create_file";
     public string Description =>
@@ -54,32 +49,13 @@ internal sealed class CreateFileTool : IMcpTool
         }
 
         var content = contentNode.GetString() ?? string.Empty;
-        var resolved = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolved = _policy.Resolve(path);
         if (File.Exists(resolved))
         {
             throw new InvalidOperationException("File already exists. Use replace_in_file.");
         }
 
-        var directory = Path.GetDirectoryName(resolved);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        await using (var stream = new FileStream(
-                         resolved,
-                         new FileStreamOptions
-                         {
-                             Access = FileAccess.Write,
-                             Mode = FileMode.CreateNew,
-                             Share = FileShare.ReadWrite,
-                             Options = FileOptions.SequentialScan
-                         }))
-        await using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
-        {
-            await writer.WriteAsync(content.AsMemory());
-            await writer.FlushAsync();
-        }
+        await NativePath.WriteAsync(_policy, path, resolved, content, true);
 
         return "{\"status\":\"success\"}";
     }

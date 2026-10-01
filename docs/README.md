@@ -1,12 +1,12 @@
 # План исправлений FilesystemMcp
 
-Статус: спецификации, реализация исправлений ещё не выполнена. Основание — аудит версии 1.1.2 от 2026-10-01. Номера FS-01…FS-13 соответствуют пунктам 1…13 аудита.
+Статус: FS-01 реализован и принят независимым ревью в третьем раунде (версия 1.2.0); остальные исправления ещё не выполнены. Основание — аудит версии 1.1.2 от 2026-10-01. Номера FS-01…FS-13 соответствуют пунктам 1…13 аудита.
 
 ## Спецификации
 
 | ID | Приоритет | Исправление | Тестовый класс |
 |---|---|---|---|
-| [FS-01](01-workspace-links.md) | P1 | Workspace jail и allowSymLinks=false | WorkspaceLinksTests |
+| [FS-01](01-workspace-links.md) | P1 | Логическая граница workspace, allowSymLinks=true по умолчанию и strict false | WorkspaceLinksTests / WorkspaceLinksAcceptanceTests |
 | [FS-02](02-atomic-writes.md) | P1 | Атомарная запись и конфликты | AtomicWritesTests |
 | [FS-03](03-text-encoding.md) | P1 | Строгий decoder и сохранение формата | TextEncodingTests |
 | [FS-04](04-file-locks.md) | P1 | Занятые файлы и неполный поиск | FileLocksTests |
@@ -23,7 +23,7 @@
 ## Общие договорённости
 
 - Настройки — immutable ServerOptions, задаваемые при запуске. Первый аргумент остаётся workspace; новые аргументы имеют форму --name=value. Неизвестные имена, неверные boolean/numeric значения и дубликаты — ошибка запуска в stderr и ненулевой exit code. stdout содержит только protocol frames. Конфигурация не меняется через tools/call.
-- allowSymLinks — точное имя boolean-настройки, default false; --allowSymLinks=true включает её явно.
+- allowSymLinks — точное имя boolean-настройки, default true по override пользователя; --allowSymLinks=false включает strict jail без ссылок. True разрешает внешние цели ссылок внутри workspace; прямой outside absolute/../ входной маршрут запрещён в обоих режимах.
 - Ошибки выполнения tool: result.isError=true, content[0].text — JSON с code, message и при необходимости безопасными деталями. Ошибки формы протокола/аргументов: JSON-RPC error. Клиент не должен разбирать текст exception.
 - Для read/list/search результаты — JSON object в text content; при поддержке structuredContent тот же object. Изменение search/list с array на object — изменение контракта, требующее версии и обновления README/client samples.
 - FS-12 сохраняет пять текущих стандартных tools и удаляет прямые custom RPC методы. append не реализуется в этом цикле; его рекомендации удаляются.

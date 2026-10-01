@@ -7,17 +7,12 @@ internal sealed class FileService
     public const int DefaultMaxLines = 1000;
     public const int AbsoluteMaxLines = 50_000;
 
-    private readonly string _workspaceRoot;
+    private readonly PathPolicy _policy;
+    private string _workspaceRoot => _policy.Root;
 
-    public FileService(string workspaceRoot)
-    {
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            throw new ArgumentException("WorkspaceRoot must be provided.", nameof(workspaceRoot));
-        }
+    public FileService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-        _workspaceRoot = Path.GetFullPath(workspaceRoot);
-    }
+    public FileService(PathPolicy policy) => _policy = policy;
 
     public async Task<ReadFileResult> ReadFileAsync(
         string path,
@@ -26,7 +21,7 @@ internal sealed class FileService
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolvedPath = _policy.Resolve(path);
 
         ValidateLineRange(options.StartLine, options.EndLine);
         var effectiveMaxLines = ResolveEffectiveMaxLines(options);
@@ -118,7 +113,7 @@ internal sealed class FileService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
-        var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolvedPath = _policy.Resolve(path);
         var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
         FileTextHelper.EnsureHashMatches(originalHash, canonicalContent);
 
@@ -132,7 +127,7 @@ internal sealed class FileService
         }
 
         var updatedText = ReplaceFirst(canonicalContent, normalizedTarget, normalizedReplacement, targetIndex);
-        await FileTextHelper.WriteUtf8WithoutBomAsync(resolvedPath, updatedText, cancellationToken);
+        await NativePath.WriteAsync(_policy, path, resolvedPath, updatedText, false, cancellationToken);
 
         var (_, newSha256) = FileTextHelper.ComputeContentHashes(updatedText);
         return (updatedText, newSha256);

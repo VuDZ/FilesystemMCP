@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.1.2
+**Version:** 1.2.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -10,7 +10,7 @@
 
 A lightweight, zero-dependency Model Context Protocol (MCP) server for local file operations, built with C# .NET 10 Native AOT.
 
-Designed for safe, autonomous LLM agent interactions via JSON-RPC 2.0 over `stdio`. It features a strict "Workspace Jail" to prevent path traversal and optimistic locking to prevent code corruption during LLM hallucinations.
+Designed for autonomous LLM agent interactions via JSON-RPC 2.0 over `stdio`. It keeps incoming paths within the logical workspace, supports links to internal/external files by default, and uses optimistic locking for replacements. An explicit `--allowSymLinks=false` enables a physical workspace jail without links.
 
 Compatible with Cursor, OpenCode, RooCode, and Claude Desktop. Implements the MCP handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`) and writes diagnostic logs to `logs/mcplog-*.log` next to the executable.
 
@@ -39,6 +39,20 @@ Add the compiled executable to your MCP client settings.
 - **Type:** `command`
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
+
+### Workspace links and result contracts
+
+`FilesystemMCP.exe <workspace> [--allowSymLinks=true|false]` configures immutable startup options. Links are enabled by default. Unknown options, duplicate options, a bare flag, and values other than lowercase `true` or `false` fail startup with a nonzero exit and stderr diagnostics; stdout remains reserved for protocol frames.
+
+With `false`, direct access through any file/directory symlink or Windows junction is rejected with `symlink_not_allowed`, including parents of a new file and a linked workspace root; ordinary paths stay in the physical jail. System ancestors above the root are physically canonicalized. With `true` (including omitted option), internal and external link targets are allowed when reached through an incoming path inside the logical workspace. Direct absolute outside paths and `../` escapes are rejected with `path_outside_workspace` in both modes, including temporary logical escapes followed by reentry. A linked startup root establishes the physical base of the logical workspace. Link chains and physical `..` are resolved component by component without Unicode normalization; incoming logical path depth is checked separately.
+
+Windows drive/root-changing components such as `dummy/C:outside` are rejected in both modes; resolved paths are fully qualified. Colons remain valid filename characters on Unix. Windows directory link targets/root spellings are canonicalized using their opened handle's final path. Search tracks directory volume/file identity (dev/inode on Unix), so 8.3 aliases cannot cause repeated traversal; logical result aliases remain usable.
+
+`list_directory` returns a JSON object `{"entries":[{"name":"example","type":"file"}]}`. Types are `file`, `directory`, and `link`; listing a link name does not open its target. `search` returns `{"matches":[{"path":"file.txt","line":1}],"skipped":[{"path":"link","code":"symlink_not_allowed"}],"incomplete":true}` (this example assumes explicit `false`). In default `true` mode it searches external linked directories as well. It skips rejected/dangling/cyclic links and already visited physical directories, continues searching, and sets `incomplete` when `skipped` is nonempty. `already_visited` explains duplicate physical directory aliases and directory cycles. Match paths retain the logical workspace alias and can be passed back to `read_file`. The existing limit of 50 matches remains.
+
+Path errors in `tools/call` return `result.isError=true` and JSON text with `code` and `message`. Codes added for paths are `symlink_not_allowed`, `path_outside_workspace`, `symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`, `path_changed`, `unsupported_safe_write`, and `path_is_directory` (root/existing directory used as a file). Legacy direct path methods use JSON-RPC error `-32001` with the same code in `message` until FS-12 removes them. Other operational error mapping is tracked by FS-05.
+
+Writes recheck policy before committing and use directory/leaf handles: Windows verifies the physical anchor handle, pins directories against write/delete sharing, and opens children relative to those handles with reparse following disabled. Allowed external targets use their existing physical parent as the anchor. 64-bit Linux/macOS use `openat` with `O_NOFOLLOW` and compare pinned/live parent dev/inode identities before opening the leaf and before truncation. Unsupported platforms/scenarios fail closed. Root/existing-directory file writes are rejected before mutation. These guards prevent replacement links and detected parent identity swaps from redirecting a write; FS-02 atomic writes and crash recovery remain separate. Hard links and Windows case-sensitive directory semantics remain backlog limitations. A complete OS sandbox guarantee against arbitrary concurrent renames, including renames after commit, is not claimed.
 
 ### Agent & OpenCode Templates
 
@@ -145,11 +159,11 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.1.2
+**Версия:** 1.2.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
-Разработан для безопасной, автономной работы LLM-агентов. Включает строгую «Песочницу» (Workspace Jail) для защиты от выхода за пределы директории и механизм оптимистичной блокировки (optimistic locking) для предотвращения порчи кода при галлюцинациях нейросетей.
+Разработан для автономной работы LLM-агентов. Входные пути ограничены логическим workspace; ссылки на внутренние и внешние файлы включены по умолчанию. `--allowSymLinks=false` включает физический jail без ссылок. Замены используют оптимистичную блокировку. [Контракт ссылок, результатов и ошибок](#workspace-links-and-result-contracts).
 
 Совместим с Cursor, OpenCode, RooCode и Claude Desktop. Реализует MCP-handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`). Диагностические логи пишутся в `logs/mcplog-*.log` рядом с исполняемым файлом.
 
@@ -286,4 +300,4 @@ dotnet publish -c Release
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-Спецификации описывают запланированные изменения. Тесты KnownDefect проверяют ожидаемое исправленное поведение и до реализации исправлений падают; Baseline содержит контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

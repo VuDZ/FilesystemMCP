@@ -34,17 +34,12 @@ internal sealed class SearchTool : IMcpTool
         "release"
     };
 
-    private readonly string _workspaceRoot;
+    private readonly PathPolicy _policy;
+    private string _workspaceRoot => _policy.Root;
 
-    public SearchTool(string workspaceRoot)
-    {
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            throw new ArgumentException("WorkspaceRoot must be provided.", nameof(workspaceRoot));
-        }
+    public SearchTool(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-        _workspaceRoot = Path.GetFullPath(workspaceRoot);
-    }
+    public SearchTool(PathPolicy policy) => _policy = policy;
 
     public string Name => "search";
     public string Description => "Searches for a regex pattern in files. ALWAYS use this to find function definitions or variable usages instead of guessing file paths. Returns max 50 results.";
@@ -100,50 +95,48 @@ internal sealed class SearchTool : IMcpTool
             throw new ArgumentException($"Invalid regex: {ex.Message}", nameof(arguments));
         }
 
-        var matches = await SearchAsync(regex, fileMask);
-        return SerializeMatches(matches);
+        return await SearchAsync(regex, fileMask);
     }
 
-    private async Task<List<(string Path, int Line)>> SearchAsync(Regex regex, string fileMask)
+    private async Task<string> SearchAsync(Regex regex, string fileMask)
     {
-        var result = new List<(string Path, int Line)>(Math.Min(MaxMatches, 16));
+        var result = new List<(string Path, int Line)>();
+        var skipped = new List<(string Path, string Code)>();
+        var visited = new HashSet<NativePath.DirectoryIdentity>();
         var pending = new Stack<string>();
-        pending.Push(_workspaceRoot);
-
+        pending.Push(".");
         while (pending.Count > 0 && result.Count < MaxMatches)
         {
-            var currentDirectory = pending.Pop();
-            foreach (var childDirectory in Directory.EnumerateDirectories(currentDirectory))
+            var requested = pending.Pop();
+            string directory;
+            NativePath.DirectoryIdentity identity;
+            try
             {
-                if (ShouldSkipDirectory(childDirectory))
-                {
-                    continue;
-                }
-
-                pending.Push(childDirectory);
+                directory = _policy.Resolve(requested);
+                identity = NativePath.GetDirectoryIdentity(directory);
             }
-
-            foreach (var filePath in Directory.EnumerateFiles(currentDirectory))
+            catch (PathPolicyException ex) { skipped.Add((requested, ex.Code)); continue; }
+            if (!visited.Add(identity)) { skipped.Add((requested, "already_visited")); continue; }
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
             {
-                if (!FileSystemName.MatchesSimpleExpression(fileMask, Path.GetFileName(filePath), ignoreCase: true))
+                // Keep the logical alias, including when a link points outside.
+                // Matches can be passed straight back to read_file.
+                var relative = requested == "." ? Path.GetFileName(entry) : Path.Combine(requested, Path.GetFileName(entry));
+                string physical;
+                try { physical = _policy.Resolve(relative); }
+                catch (PathPolicyException ex) { skipped.Add((relative, ex.Code)); continue; }
+                if (Directory.Exists(physical))
                 {
+                    if (!ShouldSkipDirectory(entry)) pending.Push(relative);
                     continue;
                 }
-
-                if (!await IsTextFileAsync(filePath))
-                {
-                    continue;
-                }
-
-                await CollectMatchesAsync(filePath, regex, result);
-                if (result.Count >= MaxMatches)
-                {
-                    break;
-                }
+                if (!FileSystemName.MatchesSimpleExpression(fileMask, Path.GetFileName(entry), ignoreCase: true)) continue;
+                if (!await IsTextFileAsync(physical)) continue;
+                await CollectMatchesAsync(physical, relative, regex, result);
+                if (result.Count >= MaxMatches) break;
             }
         }
-
-        return result;
+        return SerializeMatches(result, skipped);
     }
 
     private static bool ShouldSkipDirectory(string path)
@@ -177,7 +170,7 @@ internal sealed class SearchTool : IMcpTool
         return true;
     }
 
-    private async Task CollectMatchesAsync(string filePath, Regex regex, List<(string Path, int Line)> result)
+    private async Task CollectMatchesAsync(string filePath, string logicalPath, Regex regex, List<(string Path, int Line)> result)
     {
         await using var stream = new FileStream(
             filePath,
@@ -204,17 +197,18 @@ internal sealed class SearchTool : IMcpTool
 
             for (var i = 0; i < lineMatches.Count && result.Count < MaxMatches; i++)
             {
-                result.Add((Path.GetRelativePath(_workspaceRoot, filePath), lineNumber));
+                result.Add((logicalPath, lineNumber));
             }
         }
     }
 
-    private static string SerializeMatches(IReadOnlyList<(string Path, int Line)> matches)
+    private static string SerializeMatches(IReadOnlyList<(string Path, int Line)> matches, IReadOnlyList<(string Path, string Code)> skipped)
     {
         var buffer = new ArrayBufferWriter<byte>(8192);
         using (var writer = new Utf8JsonWriter(buffer))
         {
-            writer.WriteStartArray();
+            writer.WriteStartObject();
+            writer.WriteStartArray("matches");
             foreach (var match in matches)
             {
                 writer.WriteStartObject();
@@ -224,6 +218,17 @@ internal sealed class SearchTool : IMcpTool
             }
 
             writer.WriteEndArray();
+            writer.WriteStartArray("skipped");
+            foreach (var item in skipped)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("path", item.Path);
+                writer.WriteString("code", item.Code);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteBoolean("incomplete", skipped.Count > 0);
+            writer.WriteEndObject();
         }
 
         return Encoding.UTF8.GetString(buffer.WrittenSpan);

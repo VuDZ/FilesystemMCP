@@ -4,37 +4,26 @@ namespace FilesystemMcp;
 
 internal sealed class MutationService
 {
-    private readonly string _workspaceRoot;
+    private readonly PathPolicy _policy;
+    private string _workspaceRoot => _policy.Root;
 
-    public MutationService(string workspaceRoot)
-    {
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            throw new ArgumentException("WorkspaceRoot must be provided.", nameof(workspaceRoot));
-        }
+    public MutationService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-        _workspaceRoot = Path.GetFullPath(workspaceRoot);
-    }
+    public MutationService(PathPolicy policy) => _policy = policy;
 
     public async Task<CreateFileResult> CreateFileAsync(
         string path,
         string content,
         CancellationToken cancellationToken = default)
     {
-        var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolvedPath = _policy.Resolve(path);
         if (File.Exists(resolvedPath))
         {
             throw new InvalidOperationException("File already exists. Use replace_in_file instead.");
         }
 
-        var directoryPath = Path.GetDirectoryName(resolvedPath);
-        if (!string.IsNullOrEmpty(directoryPath))
-        {
-            Directory.CreateDirectory(directoryPath);
-        }
-
         var canonicalContent = FileTextHelper.NormalizeLineEndings(content);
-        await FileTextHelper.WriteUtf8WithoutBomAsync(resolvedPath, canonicalContent, cancellationToken);
+        await NativePath.WriteAsync(_policy, path, resolvedPath, canonicalContent, true, cancellationToken);
 
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonicalContent);
         return new CreateFileResult(resolvedPath, md5, sha256);
@@ -57,7 +46,7 @@ internal sealed class MutationService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
-        var resolvedPath = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolvedPath = _policy.Resolve(path);
         var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
         FileTextHelper.EnsureHashMatches(originalHash, canonicalContent);
 
@@ -71,7 +60,7 @@ internal sealed class MutationService
         }
 
         var updatedContent = ReplaceFirst(canonicalContent, normalizedTarget, normalizedReplacement, index);
-        await FileTextHelper.WriteUtf8WithoutBomAsync(resolvedPath, updatedContent, cancellationToken);
+        await NativePath.WriteAsync(_policy, path, resolvedPath, updatedContent, false, cancellationToken);
 
         var (updatedMd5, updatedSha256) = FileTextHelper.ComputeContentHashes(updatedContent);
         return new ReplaceInFileResult(resolvedPath, updatedMd5, updatedSha256);

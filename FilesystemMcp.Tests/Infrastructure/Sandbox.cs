@@ -34,13 +34,26 @@ internal sealed class Sandbox : IDisposable
             throw new PlatformNotSupportedException("Junction fixture must be used with WindowsFact.");
         var link = Path.GetFullPath(name, Workspace);
         EnsureInside(link, Workspace);
-        EnsureInside(target, Root);
+        // Canonicalize an existing target to validate 8.3 aliases as well. This
+        // still rejects targets outside our owned sandbox before creating links.
+        EnsureInside(NativePath.GetPhysicalDirectoryPath(target), NativePath.GetPhysicalDirectoryPath(Root));
         string Quote(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
         var command = "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path "
             + Quote(link) + " -Target " + Quote(target) + " | Out-Null";
         var result = await ProcessRunner.PowerShellAsync(["-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(command))]);
         Assert.True(result.ExitCode == 0, "Junction fixture failed: " + result.Stderr);
         _links.Add(link);
+    }
+
+    public string Symlink(string name, string target, bool directory = false)
+    {
+        var link = Path.GetFullPath(name, Workspace);
+        EnsureInside(link, Workspace);
+        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+        if (directory) Directory.CreateSymbolicLink(link, target);
+        else File.CreateSymbolicLink(link, target);
+        _links.Add(link);
+        return link;
     }
 
     public string CopyServer(string name, bool protectedHost = false)
@@ -66,19 +79,31 @@ internal sealed class Sandbox : IDisposable
         EnsureInside(Root, Path.GetTempPath());
         if (!Path.GetFileName(Root).StartsWith("filesystemmcp-tests-", StringComparison.Ordinal))
             throw new InvalidOperationException("Unexpected cleanup target.");
-        foreach (var link in _links.AsEnumerable().Reverse())
-            if (Directory.Exists(link)) Directory.Delete(link, recursive: false);
         // Windows can briefly retain a copied DLL after a crashed child exits (WER/AV).
         // Retry cleanup only; these waits do not synchronize any behavioral assertions.
         for (var attempt = 0; attempt < 10; attempt++)
         {
             try
             {
-                if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
+                if (Directory.Exists(Root)) DeleteTreeWithoutFollowingLinks(Root);
                 return;
             }
             catch (IOException) when (attempt < 9) { Thread.Sleep(500); }
             catch (UnauthorizedAccessException) when (attempt < 9) { Thread.Sleep(500); }
         }
+    }
+
+    private static void DeleteTreeWithoutFollowingLinks(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(path, false);
+            else File.Delete(path);
+            return;
+        }
+        if ((attributes & FileAttributes.Directory) == 0) { File.Delete(path); return; }
+        foreach (var child in Directory.EnumerateFileSystemEntries(path)) DeleteTreeWithoutFollowingLinks(child);
+        Directory.Delete(path, false);
     }
 }

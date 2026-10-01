@@ -20,7 +20,7 @@
 | B-14 | P2 | Наблюдаемость и support bundle | Request/session ids, relative path, codes, sizes, skipped counts, metrics; opt-in sanitized bundle для реального Unicode/lock инцидента. Секреты не логируются. |
 | B-15 | P2 | Extended fault/performance lab | SMB interruptions, antivirus/indexer locks, process crash между prepare/commit, memory/time profiles и долгие traversal. Не заменяет детерминированные tests FS-02/07. |
 | B-16 | P3 | JSONC installer support | Parse/edit preserving comments и settings либо поддерживаемая миграция. До этого FS-08 отказывает без перезаписи. |
-| B-17 | P3 | Административная политика расширения root | Если нужны links наружу, отдельные явные allowedRoots с threat model и тестами; allowSymLinks не должен отключать workspace jail. |
+| B-17 | P3 | Административные ограничения внешних целей | Будущая optional allowedRoots policy может ограничивать разрешённые внешние targets при allowSymLinks=true. Сейчас true по умолчанию разрешает external links через logical workspace route; прямой outside absolute/../ остаётся запрещён. |
 
 ## Как вести backlog
 

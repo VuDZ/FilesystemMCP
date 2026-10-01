@@ -5,14 +5,14 @@ namespace FilesystemMcp.Tests;
 [Trait("Spec", "FS-01")]
 public sealed class WorkspaceLinksTests
 {
-    [WindowsFact, Trait("Status", "KnownDefect")]
-    public async Task DefaultPolicyRejectsExternalJunctionWithoutChangingOutsideFile()
+    [WindowsFact, Trait("Status", "Baseline")]
+    public async Task ExplicitFalseRejectsExternalJunctionWithoutChangingOutsideFile()
     {
         using var sandbox = new Sandbox();
         var outside = Path.Combine(sandbox.Outside, "secret.txt");
         await File.WriteAllTextAsync(outside, "outside secret", Sandbox.Utf8);
         await sandbox.JunctionAsync("link", sandbox.Outside);
-        await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
+        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, ["--allowSymLinks=false"]);
         var read = await server.ToolAsync("read_file", new { path = "link/secret.txt" });
         var replace = await server.ToolAsync("replace_in_file", new
         {
@@ -24,7 +24,7 @@ public sealed class WorkspaceLinksTests
         McpAssert.ToolError(replace, "symlink_not_allowed");
     }
 
-    [WindowsFact, Trait("Status", "KnownDefect")]
+    [WindowsFact, Trait("Status", "Baseline")]
     public async Task ExplicitFalseRejectsInternalJunction()
     {
         using var sandbox = new Sandbox();
@@ -35,15 +35,15 @@ public sealed class WorkspaceLinksTests
         McpAssert.ToolError(reply, "symlink_not_allowed");
     }
 
-    [WindowsFact, Trait("Status", "KnownDefect")]
-    public async Task TrueStillRejectsExternalPhysicalTarget()
+    [WindowsFact, Trait("Status", "Baseline")]
+    public async Task DefaultTrueAllowsExternalPhysicalTarget()
     {
         using var sandbox = new Sandbox();
         await File.WriteAllTextAsync(Path.Combine(sandbox.Outside, "secret.txt"), "outside", Sandbox.Utf8);
         await sandbox.JunctionAsync("link", sandbox.Outside);
-        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, ["--allowSymLinks=true"]);
+        await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
         var reply = await server.ToolAsync("read_file", new { path = "link/secret.txt" });
-        McpAssert.ToolError(reply, "path_outside_workspace");
+        Assert.Equal("outside", ServerProcess.Payload(reply).GetProperty("text").GetString());
     }
 
     [WindowsFact, Trait("Status", "Baseline")]
@@ -60,6 +60,6 @@ public sealed class WorkspaceLinksTests
     public void ParentTraversalIsRejected()
     {
         using var sandbox = new Sandbox();
-        Assert.Throws<UnauthorizedAccessException>(() => WorkspaceJail.ResolvePath(sandbox.Workspace, "../outside/secret.txt"));
+        Assert.Throws<PathPolicyException>(() => new PathPolicy(sandbox.Workspace, new(false)).Resolve("../outside/secret.txt"));
     }
 }

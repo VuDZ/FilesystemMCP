@@ -16,29 +16,23 @@ internal static class Program
         Console.InputEncoding = new System.Text.UTF8Encoding(false);
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 
-        if (args.Length < 1)
-        {
-            McpLogger.LogError("WorkspaceRoot argument is required.");
-            return 1;
-        }
-
-        var workspaceRoot = args[0];
+        PathPolicy policy;
         try
         {
-            _ = Path.GetFullPath(workspaceRoot);
+            var (workspace, options) = ServerOptions.Parse(args);
+            policy = new PathPolicy(workspace, options);
         }
         catch (Exception ex)
         {
-            McpLogger.LogError("Invalid WorkspaceRoot", ex);
+            await Console.Error.WriteLineAsync("Startup failed: " + (ex is PathPolicyException pathError ? pathError.Code : ex.Message));
             return 1;
         }
-
-        var fileService = new FileService(workspaceRoot);
-        var mutationService = new MutationService(workspaceRoot);
+        var fileService = new FileService(policy);
+        var mutationService = new MutationService(policy);
         var toolRegistry = new ToolRegistry();
-        toolRegistry.Register(new ListDirectoryTool(workspaceRoot));
-        toolRegistry.Register(new SearchTool(workspaceRoot));
-        toolRegistry.Register(new CreateFileTool(workspaceRoot));
+        toolRegistry.Register(new ListDirectoryTool(policy));
+        toolRegistry.Register(new SearchTool(policy));
+        toolRegistry.Register(new CreateFileTool(policy));
         toolRegistry.Register(new ReadFileTool(fileService));
         toolRegistry.Register(new ReplaceInFileTool(fileService));
 
@@ -61,7 +55,11 @@ internal static class Program
             try
             {
                 request = JsonSerializer.Deserialize(line, McpJsonContext.Default.JsonRpcRequest);
-                response = await ProcessRequestAsync(request, fileService, mutationService, workspaceRoot, toolRegistry);
+                response = await ProcessRequestAsync(request, fileService, mutationService, policy, toolRegistry);
+            }
+            catch (PathPolicyException ex)
+            {
+                response = CreateErrorResponse(request?.Id, -32001, ex.Code);
             }
             catch (Exception ex)
             {
@@ -89,7 +87,7 @@ internal static class Program
         JsonRpcRequest? request,
         FileService fileService,
         MutationService mutationService,
-        string workspaceRoot,
+        PathPolicy policy,
         ToolRegistry toolRegistry)
     {
         if (request is null)
@@ -127,9 +125,9 @@ internal static class Program
             "read_file" => await HandleReadFileAsync(request, fileService),
             "create_file" => await HandleCreateFileAsync(request, mutationService),
             "replace_in_file" => await HandleReplaceInFileAsync(request, mutationService),
-            "list_directory" => HandleListDirectoryStub(request, workspaceRoot),
+            "list_directory" => HandleListDirectoryStub(request, policy),
             "search" => HandleSearchStub(request),
-            "append_to_file" => HandleAppendToFileStub(request, workspaceRoot),
+            "append_to_file" => HandleAppendToFileStub(request, policy),
             "prompts/list" => HandlePromptsList(request.Id),
             "resources/list" => HandleResourcesList(request.Id),
             _ => CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method)
@@ -190,6 +188,12 @@ internal static class Program
             var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult);
             return CreateResultResponse(request.Id, payload);
         }
+        catch (PathPolicyException ex)
+        {
+            var text = "{\"code\":\"" + ex.Code + "\",\"message\":\"" + ex.Message + "\"}";
+            var result = new ToolsCallResult(new[] { new ToolCallContent("text", text) }, true);
+            return CreateResultResponse(request.Id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
+        }
         catch (Exception ex)
         {
             McpLogger.LogError("Tool execution failed", ex);
@@ -246,7 +250,7 @@ internal static class Program
         return CreateResultResponse(request.Id, payload);
     }
 
-    private static JsonRpcResponse HandleListDirectoryStub(JsonRpcRequest request, string workspaceRoot)
+    private static JsonRpcResponse HandleListDirectoryStub(JsonRpcRequest request, PathPolicy policy)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ListDirectoryParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
@@ -254,7 +258,7 @@ internal static class Program
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid list_directory params.");
         }
 
-        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, path);
+        var fullPath = policy.Resolve(path);
         var result = new ListDirectoryResult(fullPath, Array.Empty<string>());
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ListDirectoryResult);
         return CreateResultResponse(request.Id, payload);
@@ -273,7 +277,7 @@ internal static class Program
         return CreateResultResponse(request.Id, payload);
     }
 
-    private static JsonRpcResponse HandleAppendToFileStub(JsonRpcRequest request, string workspaceRoot)
+    private static JsonRpcResponse HandleAppendToFileStub(JsonRpcRequest request, PathPolicy policy)
     {
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.AppendToFileParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
@@ -281,7 +285,7 @@ internal static class Program
             return CreateErrorResponse(request.Id, -32602, "Missing or invalid append_to_file params.");
         }
 
-        var fullPath = WorkspaceJail.ResolvePath(workspaceRoot, path);
+        var fullPath = policy.Resolve(path);
         var result = new WriteResult(fullPath, "stub");
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.WriteResult);
         return CreateResultResponse(request.Id, payload);

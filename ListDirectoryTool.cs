@@ -18,17 +18,12 @@ internal sealed class ListDirectoryTool : IMcpTool
 }
 """;
 
-    private readonly string _workspaceRoot;
+    private readonly PathPolicy _policy;
+    private string _workspaceRoot => _policy.Root;
 
-    public ListDirectoryTool(string workspaceRoot)
-    {
-        if (string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            throw new ArgumentException("WorkspaceRoot must be provided.", nameof(workspaceRoot));
-        }
+    public ListDirectoryTool(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-        _workspaceRoot = Path.GetFullPath(workspaceRoot);
-    }
+    public ListDirectoryTool(PathPolicy policy) => _policy = policy;
 
     public string Name => "list_directory";
     public string Description =>
@@ -45,37 +40,29 @@ internal sealed class ListDirectoryTool : IMcpTool
 
         var path = ToolArguments.GetRequiredPath(arguments);
 
-        var resolved = WorkspaceJail.ResolvePath(_workspaceRoot, path);
+        var resolved = _policy.Resolve(path);
         if (!Directory.Exists(resolved))
         {
             throw new DirectoryNotFoundException("Directory not found.");
         }
 
-        var directories = Directory.GetDirectories(resolved);
-        var files = Directory.GetFiles(resolved);
-
+        var entries = Directory.EnumerateFileSystemEntries(resolved).OrderBy(static p => p, PathPolicy.Comparer);
         var buffer = new ArrayBufferWriter<byte>(4096);
         using (var writer = new Utf8JsonWriter(buffer))
         {
-            writer.WriteStartArray();
-
-            foreach (var directory in directories.OrderBy(static d => d, StringComparer.OrdinalIgnoreCase))
+            writer.WriteStartObject();
+            writer.WriteStartArray("entries");
+            foreach (var entry in entries)
             {
+                var attributes = File.GetAttributes(entry);
                 writer.WriteStartObject();
-                writer.WriteString("name", Path.GetFileName(directory));
-                writer.WriteString("type", "directory");
+                writer.WriteString("name", Path.GetFileName(entry));
+                writer.WriteString("type", (attributes & FileAttributes.ReparsePoint) != 0 ? "link"
+                    : (attributes & FileAttributes.Directory) != 0 ? "directory" : "file");
                 writer.WriteEndObject();
             }
-
-            foreach (var file in files.OrderBy(static f => f, StringComparer.OrdinalIgnoreCase))
-            {
-                writer.WriteStartObject();
-                writer.WriteString("name", Path.GetFileName(file));
-                writer.WriteString("type", "file");
-                writer.WriteEndObject();
-            }
-
             writer.WriteEndArray();
+            writer.WriteEndObject();
         }
 
         return Task.FromResult(Encoding.UTF8.GetString(buffer.WrittenSpan));

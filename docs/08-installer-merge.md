@@ -13,7 +13,7 @@ Write-OpenCodeConfig генерирует новый config и стирает ex
 - Первый изменяющий запуск создаёт уникальный backup точных исходных bytes. Backup path сообщается пользователю. Повторный идентичный запуск не переписывает config и не создаёт лишний backup.
 - Prepare/validate config и AGENTS до публикации. Temp write + atomic rename; если второй commit сорвался, восстановить первый из backup и сообщить recovery outcome. Не обещать crash-atomic transaction двух файлов: на restart должен быть понятный recovery path.
 - BinaryPath обязан быть существующим файлом, WorkspacePath — директорией; LiteralPath для путей с Unicode/скобками. Значения сериализовать JSON API, не вставлять raw strings.
-- Добавить -AllowSymLinks switch: default false; только при явном включении добавить --allowSymLinks=true в command. На reinstall корректно убрать старый allow-флаг при default false. Документировать границу FS-01.
+- Согласовать будущую настройку -AllowSymLinks с пользовательским override FS-01: boolean default true; явное false добавляет --allowSymLinks=false в command. На reinstall корректно убрать старый флаг при default true. Прямые outside absolute/../ пути остаются запрещены в обоих режимах. Эта настройка installer ещё не реализована.
 - AGENTS существующие правила сохраняет, повторное добавление не дублирует раздел. Несовместимые типы узлов — явный отказ вместо overwrite.
 
 ## Приёмка
