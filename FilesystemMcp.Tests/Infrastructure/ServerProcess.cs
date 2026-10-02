@@ -69,10 +69,27 @@ internal sealed class ServerProcess : IAsyncDisposable
     }
 
     public Task<JsonElement> ToolAsync(string name, object arguments) => CallAsync("tools/call", new { name, arguments });
-    public async Task<JsonElement> CallAsync(string method, object parameters)
+
+    /// <summary>
+    /// Sends a tool call and returns its id without reading stdout. Pair with
+    /// <see cref="ReadResponseAsync"/> after the last <see cref="ProcessGate"/> release:
+    /// the response watchdog starts only then, so time the server spends parked on the
+    /// barrier is not charged against the deadline.
+    /// </summary>
+    public Task<int> SendToolAsync(string name, object arguments) => SendCallAsync("tools/call", new { name, arguments });
+
+    public async Task<int> SendCallAsync(string method, object parameters)
     {
         var id = Interlocked.Increment(ref _id);
         await SendRawAsync(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, method, @params = parameters }));
+        return id;
+    }
+
+    public async Task<JsonElement> CallAsync(string method, object parameters) =>
+        await ReadResponseAsync(await SendCallAsync(method, parameters));
+
+    public async Task<JsonElement> ReadResponseAsync(int id)
+    {
         var response = await ReadAsync();
         Assert.Equal(id, response.GetProperty("id").GetInt32());
         return response;

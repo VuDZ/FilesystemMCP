@@ -413,16 +413,16 @@ public sealed class AtomicWriteAcceptanceTests
         await using var firstGate = new ProcessGate(); await using var secondGate = new ProcessGate();
         await using var first = await firstGate.Start(sandbox.Workspace); await using var second = await secondGate.Start(sandbox.Workspace);
         var hash = FileTextHelper.ComputeContentHashes("old").Sha256;
-        var one = first.ToolAsync("replace_in_file", new { path = "real/file.txt", target_snippet = "old", replacement_snippet = "first", original_hash = hash });
+        var one = await first.SendToolAsync("replace_in_file", new { path = "real/file.txt", target_snippet = "old", replacement_snippet = "first", original_hash = hash });
         await firstGate.At("BeforeLock"); await firstGate.Release(); await firstGate.At("BeforeCommit");
-        var two = second.ToolAsync("replace_in_file", new { path = "other.txt", target_snippet = "old", replacement_snippet = "second", original_hash = hash });
+        var two = await second.SendToolAsync("replace_in_file", new { path = "other.txt", target_snippet = "old", replacement_snippet = "second", original_hash = hash });
         await secondGate.At("BeforeLock"); await secondGate.Release();
         // Different canonical path keys: only the common physical-id lock can
         // produce this deterministic contention event.
         await secondGate.At("LockContended"); await secondGate.Release(); await firstGate.Release();
-        Assert.False((await one).GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.False((await first.ReadResponseAsync(one)).GetProperty("result").GetProperty("isError").GetBoolean());
         await secondGate.At("BeforeCommit"); await secondGate.Release();
-        Assert.False((await two).GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.False((await second.ReadResponseAsync(two)).GetProperty("result").GetProperty("isError").GetBoolean());
         Assert.Equal("first", File.ReadAllText(path)); Assert.Equal("second", File.ReadAllText(secondPath));
         Assert.Equal("old", File.ReadAllText(outside));
     }
@@ -438,16 +438,18 @@ public sealed class AtomicWriteAcceptanceTests
         await using var first = await firstGate.Start(sandbox.Workspace);
         await using var second = await secondGate.Start(shortRoot ? ShortNameFactAttribute.GetShortPath(sandbox.Workspace)! : sandbox.Workspace);
         var hash = FileTextHelper.ComputeContentHashes("old").Sha256;
-        var firstWrite = create ? first.ToolAsync("create_file", new { path = "real/file.txt", content = "first" })
-            : first.ToolAsync("replace_in_file", new { path = "real/file.txt", target_snippet = "old", replacement_snippet = "first", original_hash = hash });
+        // Read the response only after the last release. ToolAsync would start the 5s
+        // watchdog at send time and count every barrier the test itself is still holding.
+        var firstWrite = create ? await first.SendToolAsync("create_file", new { path = "real/file.txt", content = "first" })
+            : await first.SendToolAsync("replace_in_file", new { path = "real/file.txt", target_snippet = "old", replacement_snippet = "first", original_hash = hash });
         await firstGate.At("BeforeLock"); await firstGate.Release();
         await firstGate.At("BeforeCommit");
-        var secondWrite = create ? second.ToolAsync("create_file", new { path = "real/file.txt", content = "second" })
-            : second.ToolAsync("replace_in_file", new { path = (alias ? "alias" : "real") + "/file.txt", target_snippet = "old", replacement_snippet = "second", original_hash = hash });
+        var secondWrite = create ? await second.SendToolAsync("create_file", new { path = "real/file.txt", content = "second" })
+            : await second.SendToolAsync("replace_in_file", new { path = (alias ? "alias" : "real") + "/file.txt", target_snippet = "old", replacement_snippet = "second", original_hash = hash });
         await secondGate.At("BeforeLock"); await secondGate.Release();
         await secondGate.At("LockContended"); await secondGate.Release();
         await firstGate.Release();
-        var success = await firstWrite; var conflict = await secondWrite;
+        var success = await first.ReadResponseAsync(firstWrite); var conflict = await second.ReadResponseAsync(secondWrite);
         Assert.False(success.GetProperty("result").GetProperty("isError").GetBoolean());
         McpAssert.ToolError(conflict, create ? "file_exists" : "hash_conflict");
         Assert.Equal("first", File.ReadAllText(Path.Combine(sandbox.Workspace, "real/file.txt")));
