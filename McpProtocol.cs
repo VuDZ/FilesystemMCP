@@ -128,7 +128,14 @@ internal sealed record ToolsCallResult(
     [property: JsonPropertyName("content")] IReadOnlyList<ToolCallContent> Content,
     [property: JsonPropertyName("isError")] bool IsError);
 
-internal sealed record ToolOperationError(string Code, string Message);
+// FS-05 error object: the machine code is the API, the message is advisory and
+// details stay bounded (a safe relative path and the retryable flag at most).
+internal sealed record ToolOperationError(string Code, string Message, ToolErrorDetails? Details = null);
+internal sealed record ToolErrorDetails(
+    [property: JsonPropertyName("requested")] string? Requested,
+    [property: JsonPropertyName("retryable")] bool Retryable);
+internal sealed record ErrorCorrelationData(
+    [property: JsonPropertyName("correlationId")] string CorrelationId);
 internal sealed record CreateFileToolResult(string Status, string Md5, string Sha256);
 
 [JsonSourceGenerationOptions(
@@ -162,6 +169,8 @@ internal sealed record CreateFileToolResult(string Status, string Md5, string Sh
 [JsonSerializable(typeof(ToolCallContent))]
 [JsonSerializable(typeof(ToolsCallResult))]
 [JsonSerializable(typeof(ToolOperationError))]
+[JsonSerializable(typeof(ToolErrorDetails))]
+[JsonSerializable(typeof(ErrorCorrelationData))]
 [JsonSerializable(typeof(CreateFileToolResult))]
 internal partial class McpJsonContext : JsonSerializerContext
 {

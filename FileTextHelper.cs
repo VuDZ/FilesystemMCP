@@ -6,28 +6,72 @@ namespace FilesystemMcp;
 internal static class FileTextHelper
 {
 
-    public static async Task<string> ReadCanonicalContentAsync(
+    public static Task<string> ReadCanonicalContentAsync(
         string resolvedPath,
+        CancellationToken cancellationToken = default) =>
+        ReadCanonicalContentAsync(resolvedPath, beforeRetry: null, cancellationToken);
+
+    internal static async Task<string> ReadCanonicalContentAsync(
+        string resolvedPath,
+        Action<int>? beforeRetry,
         CancellationToken cancellationToken = default)
     {
-        var rawContent = await ReadRawContentAsync(resolvedPath, cancellationToken);
+        var rawContent = await ReadRawContentAsync(resolvedPath, beforeRetry, cancellationToken);
         return NormalizeLineEndings(rawContent);
     }
 
-    public static async Task<string> ReadRawContentAsync(
+    public static Task<string> ReadRawContentAsync(
         string resolvedPath,
+        CancellationToken cancellationToken = default) =>
+        ReadRawContentAsync(resolvedPath, beforeRetry: null, cancellationToken);
+
+    internal static async Task<string> ReadRawContentAsync(
+        string resolvedPath,
+        Action<int>? beforeRetry,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await using var stream = new FileStream(
+        try
+        {
+            return await SharingRetry.RunAsync(
+                async token =>
+                {
+                    await using var stream = OpenReadStream(resolvedPath);
+                    return (await TextDocument.ParseAsync(stream, token)).Text;
+                },
+                beforeRetry,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            var translated = FileErrorClassifier.Translate(ex);
+            if (ReferenceEquals(translated, ex))
+            {
+                throw;
+            }
+
+            throw translated;
+        }
+    }
+
+    /// <summary>
+    /// The single read-open contract used by read_file and search: another process
+    /// may still write, rename or delete the file while we hold this handle. Write
+    /// sharing is governed by the FS-02 strategy and is deliberately not reused here.
+    /// </summary>
+    internal static FileStream OpenReadStream(string resolvedPath) =>
+        new(
             resolvedPath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            FileShare.ReadWrite | FileShare.Delete,
             bufferSize: 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return (await TextDocument.ParseAsync(stream, cancellationToken)).Text;
-    }
     public static (string Text, int TotalLines) ExtractRequestedContent(
         string canonicalContent,
         int? startLine,
@@ -76,13 +120,31 @@ internal static class FileTextHelper
         return (selected.ToString(), currentLine);
     }
 
-    public static Task WriteUtf8WithoutBomAsync(string resolvedPath, string content,
+    public static async Task WriteUtf8WithoutBomAsync(string resolvedPath, string content,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(resolvedPath);
-        return AtomicFileWriter.WriteTextAsync(new PathPolicy(Path.GetDirectoryName(fullPath)!),
-            Path.GetFileName(fullPath), content, false, cancellationToken);
+        try
+        {
+            await AtomicFileWriter.WriteTextAsync(new PathPolicy(Path.GetDirectoryName(fullPath)!),
+                Path.GetFileName(fullPath), content, false, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            var translated = FileErrorClassifier.Translate(ex);
+            if (ReferenceEquals(translated, ex))
+            {
+                throw;
+            }
+
+            throw translated;
+        }
     }
     public static string NormalizeLineEndings(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal)

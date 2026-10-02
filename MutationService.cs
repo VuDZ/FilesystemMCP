@@ -16,7 +16,8 @@ internal sealed class MutationService
         string content,
         CancellationToken cancellationToken = default)
     {
-        var result = await AtomicFileWriter.WriteTextAsync(_policy, path, content, true, cancellationToken);
+        var result = await TranslateAsync(() =>
+            AtomicFileWriter.WriteTextAsync(_policy, path, content, true, cancellationToken));
         return new CreateFileResult(result.Path, result.Md5, result.Sha256);
     }
     public async Task<ReplaceInFileResult> ReplaceInFileAsync(
@@ -36,7 +37,31 @@ internal sealed class MutationService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
-        var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
+        var result = await TranslateAsync(() =>
+            AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken));
         return new ReplaceInFileResult(result.Path, result.Md5, result.Sha256);
+    }
+
+    private static async Task<T> TranslateAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            var translated = FileErrorClassifier.Translate(ex);
+            if (ReferenceEquals(translated, ex))
+            {
+                throw;
+            }
+
+            throw translated;
+        }
     }
 }

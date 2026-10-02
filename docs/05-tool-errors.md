@@ -2,6 +2,10 @@
 
 Приоритет: P1. Источники: Program.HandleToolsCallAsync, ToolRegistry, McpProtocol.
 
+Статус: выполнено.
+
+Версия реализации: **1.6.0**. Принято независимым ревью: в первом раунде подняты замечания (таблица `directory_not_found`, sensitivity-проверка, genuinely unexpected correlation path, `resource_limit` для regex deadline, фиксированный текст `-32602`, формулировки границ), они исправлены и подтверждены в раундах 2–3.
+
 ## Дефект
 
 Любое исключение в tools/call превращается в -32603 Internal error. Недоступный файл, conflict, неверные arguments и unknown tool клиент различить не может.
@@ -23,3 +27,57 @@ ToolErrorsTests через живой stdio: missing file и stale hash возв
 Дополнить таблицу для всех codes, включая filesystem-specific HResult, отсутствие sensitive content, source-generated serialization/AOT, correlation id unexpected failure, logger unavailable, no duplicate responses. Stable machine code обязателен; human message не использовать как API.
 
 Зависимости: FS-06 для безопасной диагностики, FS-13 для transport validation. Ссылки: MCP Tools https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling.
+
+## Таблица кодов
+
+Единый источник — `ToolErrorCodes` / `ToolErrorMessages` / `ToolErrorMapper` (`ToolErrorMapping.cs`); `retryable` — часть машинного контракта, а не текст.
+
+| code | Триггер | `retryable` |
+|---|---|---|
+| `file_not_found` | Файл (или последний компонент пути) не существует: `FileNotFoundException`, `ERROR_FILE_NOT_FOUND` (2), `ENOENT`, `MutationException` из atomic write | false |
+| `directory_not_found` | Отсутствует каталог в пути: `DirectoryNotFoundException` (обе платформы) либо `ERROR_PATH_NOT_FOUND` (0x80070003) | false |
+| `file_locked` | Sharing/lock violation чужого handle: `ERROR_SHARING_VIOLATION` (32), `ERROR_LOCK_VIOLATION` (33); на POSIX не выводится | true |
+| `access_denied` | Отказ доступа: `UnauthorizedAccessException`, `ERROR_ACCESS_DENIED` (5), `EACCES` (13) / `EPERM` (1), read-only/immutable файл | false |
+| `path_outside_workspace` | Логический или физический выход за workspace (`PathPolicyException`) | false |
+| `symlink_not_allowed` | Ссылка при `--allowSymLinks=false` либо ссылка на корне пути | false |
+| `hash_conflict` | Наблюдаемое состояние изменилось между read и commit (FS-02), в том числе stale `original_hash` | false |
+| `target_not_found` | `target_snippet` не найден в файле | false |
+| `file_exists` | `create_file` по существующему пути либо конкурентное появление файла | false |
+| `unsupported_encoding` | Строгий decoder: невалидный UTF-8/16/32 или неподдерживаемая кодировка | false |
+| `binary_file` | NUL в UTF-8 без BOM (FS-03); бинарный файл не обрабатывается как текст | false |
+| `resource_limit` | Существующие guard-ы: полное чтение > 1000 строк без `allow_large_read`, диапазон больше effective `max_lines`, > 50000 строк без явного `max_lines`, а также исчерпание 1-секундного match deadline регулярного выражения в `search` | false |
+| `cancelled` | `OperationCanceledException` / `TaskCanceledException` из любого entry point | false |
+
+`retryable=true` только для `file_locked`: это единственный транзиентный отказ. Для `hash_conflict` blind retry запрещён контрактом (нужен повторный read), поэтому `retryable=false` при явной рекомендации повторного чтения в `message`.
+
+`ERROR_DIRECTORY` (267) намеренно **не** распознаётся и не отображается в `directory_not_found`: код означает «путь указывает на каталог, а ожидался файл», а не «каталог не найден». `list_directory` по пути к файлу — предвиденная ошибка клиента, но FS-04 уже приняла её как внутренний отказ (`FileLocksTests.ListDirectoryOnFileIsNotMislabeledFileNotFound` фиксирует `-32603`), и FS-05 это поведение не меняет. Такой отказ попадает в correlation path вместе с действительно неожиданными дефектами.
+
+Коды FS-01 вне таблицы FS-05 (`symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`, `path_is_directory`, `path_changed`, `unsupported_safe_write`) остаются операционными: они получают свой код и фиксированное сообщение `PathPolicy.Error`, но в таблицу FS-05 не входят.
+
+## Реализованный контракт и границы
+
+`ToolErrorMapper.TryMap` — единственное место классификации. Он разбирает **типы** (`OperationCanceledException`, `PathPolicyException`, `MutationException`, `OperationalException`), а для сырых I/O-ошибок вызывает `FileErrorClassifier.TryGetCode`; классификации по `Message` нет. `Program.Main` (legacy direct RPC methods) и `Program.HandleToolsCallAsync` (`tools/call`) вызывают один и тот же mapper, поэтому **общими** являются классификатор, набор кодов и таблица code→message: один и тот же сбой даёт один и тот же код в обоих entry points (`LegacyEntryPointUsesTheSameMachineCode`). **Не** являются общими транспортная оболочка и её поля: `tools/call` отдаёт `result.isError=true` с `content[0].text` = JSON `{code,message,details?}` и только он несёт `details`/`retryable`, а legacy-методы сохраняют принятую FS-01/FS-04 оболочку — JSON-RPC error `-32001` с `message` = code и без `details`. Это осознанная граница: FS-12 удаляет legacy-методы целиком, а до тех пор менять их контракт означает ломать принятые проверки (`docs/04-file-locks.md`, `docs/02-atomic-writes.md`). Ручная сборка JSON конкатенацией строк удалена: и результат, и ошибка сериализуются через `McpJsonContext`.
+
+Классификация файловых систем: `FileErrorClassifier` дополнен `directory_not_found`. Типы `FileNotFoundException`/`DirectoryNotFoundException` проверяются **до** таблиц `HResult`/errno, потому что ENOENT (и `ERROR_PATH_NOT_FOUND` в младших 16 битах) не различает отсутствующий файл и отсутствующий каталог; тип — единственный сигнал, который это различает на обеих платформах. `ERROR_FILE_NOT_FOUND` (2) → `file_not_found`, `ERROR_PATH_NOT_FOUND` (3) → `directory_not_found`, sharing/lock (32/33) → `file_locked`, access denied (5) → `access_denied`. Win32-таблица по-прежнему применяется только на Windows; Unix использует отдельный `ClassifyUnixErrno` (EACCES/EPERM → `access_denied`, ENOENT → `file_not_found`, остальное → `null`), поэтому errno 32 (EPIPE) не читается как sharing violation.
+
+`details` содержит только два поля: безопасный `requested` relative path и `retryable`. Абсолютный путь (в том числе внутри workspace) не возвращается никогда, длина ограничена `ToolErrorMapper.MaxRequestedPathLength = 200` с явным маркером усечения, управляющие символы заменяются; ограничение и очистка выполняются общим `LogSanitizer.SanitizeText`. Сообщения кодов — фиксированный текст продукта (`ToolErrorMessages`), поэтому платформенный текст исключения (в котором .NET помещает абсолютный путь) не попадает ни в `message`, ни в `details` операционного ответа.
+
+Граница по `-32602`: клиент получает фиксированное `"Invalid arguments."`, а не текст .NET-исключения. Причина — этот текст не принадлежит продукту: `ArgumentException`-сообщения формирует фреймворк, и будущая версия может встроить в них путь. Полное (очищенное и ограниченное 200 символами плюс маркер усечения) сообщение уходит только в best-effort лог (`Program.CreateInvalidParamsResponse`). Исключение — `UnknownToolException`: `"Unknown tool: '<name>'"` это собственный текст продукта, имя клиента очищено и ограничено. Инвариант `ToolErrorMessages.ForCode(code, specific)`: функция не ограничивает `specific` и безопасна только потому, что каждый производитель typed-ошибки передаёт фиксированный литерал — единственная фабрика `PathPolicyException` это `PathPolicy.Error`, а `MutationException`/`OperationalException` строятся из литералов или из этой же таблицы. Новый производитель, передающий произвольный текст (например, платформенное сообщение), обязан сначала применить `LogSanitizer.SanitizeText`; иначе инвариант нарушится.
+
+Protocol errors: неизвестный tool (`UnknownToolException` из `ToolRegistry`) и неверная форма/тип/обязательные поля аргументов → JSON-RPC `-32602` без `result`. Отсутствующие аргументы и неверные типы распознаются по типизированному семейству `ArgumentException` (исключая `ArgumentNullException` — это проверка контракта сервисов, то есть дефект), `params` не-объект для `tools/call` — по `JsonException` вокруг `DeserializeParams`. Синтаксически сломанный кадр, invalid request и unknown method не изменялись (FS-13); поведение parse error (`-32700`, отброшенный `id:null` — известный дефект FS-13) сохранено.
+
+Непредвиденный дефект: `Program.Main` формирует neutral message (`Internal error`) и correlation id в `error.data.correlationId`, а полный exception уходит в best-effort `McpLogger.LogError`; вызов logger дополнительно обёрнут, поэтому недоступный logger не мешает ответу. Один request даёт ровно один response: ответ пишется один раз в конце обработки, отдельной ветки повторной записи нет. Никакой внутренний текст исключения в ответ не попадает.
+
+`resource_limit` реализован как отображение **существующих** guard-ов, а не как новый бюджет: read-лимиты `FileService` (1000/50000 строк, диапазон больше effective `max_lines`) и 1-секундный match deadline `search` (`RegexMatchTimeoutException` → `resource_limit`; патологический клиентский regex — это отказ по ресурсу, который клиент может исправить, а не дефект сервера). Настраиваемые `maxFileBytes`/`maxRequestBytes`/`operationTimeoutMs` остаются FS-07. `cancelled` достижим через общий mapper для любого `OperationCanceledException`; источника отмены в dispatcher пока нет (FS-07), поэтому код проверяется на уровне mapper, а не через живой stdio.
+
+Correlation id: непредвиденный дефект проверяется двумя живыми маршрутами. Во-первых, инъекция через штатный FS-02 barrier protected host: релиз барьера командой, которую host отвергает, заставляет его бросить `IOException` из тестовой обвязки — экологический дефект, недостижимый действиями клиента (`InjectedFaultIsCorrelatedAndLeavesNoPartialWrite`). Во-вторых, `ERROR_DIRECTORY` (предвиденная ошибка клиента, намеренно нераспознанная) как второстепенный случай. Гарантия correlation id, нейтрального сообщения и «полный exception только в логе» не привязана к одному спорному триггеру.
+
+Serialization/AOT: `ToolOperationError`, `ToolErrorDetails` и `ErrorCorrelationData` объявлены в `McpProtocol.cs` и зарегистрированы в source-generated `McpJsonContext`; рефлексия не используется (`JsonSerializerIsReflectionEnabledByDefault=false`, `PublishAot=true`), сборка остаётся 0 warnings.
+
+## Матрица проверки
+
+`ToolErrorsTests` (живой stdio через `FilesystemMcp.TestHost`, разбор JSON, без проверок англоязычного текста исключения): missing file, missing containing directory (`file_not_found` vs `directory_not_found`), stale hash без записи, target not found, existing file, unsupported encoding, binary file, `resource_limit` по read guard (`OversizedReadIsResourceLimitAndNotRetryable`) и по regex deadline (`PathologicalRegexIsResourceLimitAndNotADefect`), path_outside_workspace с сокрытием абсолютного пути, symlink_not_allowed, file_locked vs access_denied (`retryable`, различимость формулировок), unknown tool, отсутствующий аргумент, неверный тип аргумента, отсутствие sensitive content, bounded/sanitized `requested`, source-generated сериализация объекта ошибки, correlation id + полный exception только в логе для экологического дефекта (`InjectedFaultIsCorrelatedAndLeavesNoPartialWrite`) и для `ERROR_DIRECTORY` (`UnexpectedDefectIsCorrelatedAndOnlyLoggedInFull`), недоступный logger, отсутствие дублирующихся response, стабильность формы success/failure, legacy entry point с тем же кодом, а также self-check самой проверки на sensitive content (`SensitiveContentCheckRejectsEscapedAbsolutePaths`: экранированный абсолютный путь внутри JSON-текста payload обязан её провалить).
+
+Матрица всех 13 кодов и Windows HResult-строк (`ERROR_FILE_NOT_FOUND`/`ERROR_PATH_NOT_FOUND`/sharing/access denied, а также неприменимость Win32-таблицы к Unix) проверяется отдельными случаями. **12 из 13 кодов подтверждены живым stdio**: `file_not_found`, `directory_not_found`, `file_locked`, `access_denied`, `path_outside_workspace`, `symlink_not_allowed`, `hash_conflict`, `target_not_found`, `file_exists`, `unsupported_encoding`, `binary_file`, `resource_limit`. `cancelled` подтверждён только на уровне mapper (`CancellationIsOperationalCode`): живого триггера в dispatcher нет, отмена целой операции принадлежит FS-07; триггер не имитируется.
+
+Приёмка (версия 1.6.0, Windows, SDK 10.0.401): managed build — 0 warnings/errors; `Spec=FS-05` — 28 passed, 0 skipped, 0 failed (28 cases); `Status=Baseline` — 200 passed, 8 skipped, 0 failed (208 cases); `Status=KnownDefect` — 0 passed, 30 failed (30 cases); полный прогон — 200 passed, 30 failed, 8 skipped (238 cases), все 30 падений — прежние KnownDefect FS-06…FS-13. Контрольные прогоны FS-01/02/03/04 — 32+43+60+25 passed, 0 failed. Подробности и artifacts — в [test README](../FilesystemMcp.Tests/README.md). Одиночные падения межпроцессных гонок FS-02 на 5-секундном watchdog были дедлайном ответа, в который входило ожидание на барьере; чтение ответа начинается после последнего Release.

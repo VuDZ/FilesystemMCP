@@ -10,6 +10,9 @@ internal sealed class FileService
     private readonly PathPolicy _policy;
     private string _workspaceRoot => _policy.Root;
 
+    /// <summary>Deterministic retry-observation seam for tests; null in production.</summary>
+    internal Action<int>? BeforeReadRetry { get; set; }
+
     public FileService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
     public FileService(PathPolicy policy) => _policy = policy;
@@ -30,12 +33,10 @@ internal sealed class FileService
             && options.EndLine.HasValue
             && options.EndLine.Value - options.StartLine.Value + 1 > effectiveMaxLines)
         {
-            throw new InvalidOperationException(
-                $"Requested line range exceeds the limit of {effectiveMaxLines} lines. "
-                + "Set allow_large_read=true and optionally max_lines to read a larger range.");
+            throw ResourceLimit();
         }
 
-        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, cancellationToken);
+        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, BeforeReadRetry, cancellationToken);
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonicalContent);
 
         var isFullFileRead = !options.StartLine.HasValue && !options.EndLine.HasValue;
@@ -50,19 +51,14 @@ internal sealed class FileService
         {
             if (!options.AllowLargeRead && totalLines > DefaultMaxLines)
             {
-                throw new InvalidOperationException(
-                    $"File too large ({totalLines} lines). "
-                    + $"Default limit is {DefaultMaxLines} lines. "
-                    + "Use start_line/end_line, or set allow_large_read=true (optionally with max_lines) to read more.");
+                throw ResourceLimit();
             }
 
             if (options.AllowLargeRead
                 && !options.MaxLines.HasValue
                 && totalLines > AbsoluteMaxLines)
             {
-                throw new InvalidOperationException(
-                    $"File too large ({totalLines} lines). "
-                    + $"Maximum allowed is {AbsoluteMaxLines} lines without an explicit max_lines value.");
+                throw ResourceLimit();
             }
         }
 
@@ -113,9 +109,35 @@ internal sealed class FileService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
-        var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
-        return (result.Text, result.Sha256);
+        try
+        {
+            var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
+            return (result.Text, result.Sha256);
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            var translated = FileErrorClassifier.Translate(ex);
+            if (ReferenceEquals(translated, ex))
+            {
+                throw;
+            }
+
+            throw translated;
+        }
     }
+    /// <summary>
+    /// An existing read guard (FS-05 <c>resource_limit</c>) is an expected operational
+    /// refusal, not an internal defect: nothing was written, and repeating the same
+    /// request would fail again, so the code carries no retry advice.
+    /// </summary>
+    private static OperationalException ResourceLimit() =>
+        new(ToolErrorCodes.ResourceLimit, ToolErrorMessages.ForCode(ToolErrorCodes.ResourceLimit));
+
     private static void ValidateLineRange(int? startLine, int? endLine)
     {
         if (!startLine.HasValue && !endLine.HasValue)

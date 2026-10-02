@@ -47,7 +47,9 @@ internal sealed class ToolRegistry
     {
         if (!_tools.TryGetValue(name, out var tool))
         {
-            throw new InvalidOperationException("Tool not found");
+            // Typed, so the transport maps an unknown tool to -32602 instead of
+            // guessing from the message text or reporting an internal error.
+            throw new UnknownToolException(name);
         }
 
         try { McpLogger.LogToolInvoke(name, arguments); } catch { }
@@ -63,7 +65,9 @@ internal sealed class ToolRegistry
         catch (Exception ex)
         {
             var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAt);
-            try { CompletionLog(name, elapsed, false, ex.Message); } catch { }
+            // Log the machine code, never the exception message: a platform message can
+            // embed an absolute path, while the code is the stable operation outcome.
+            try { CompletionLog(name, elapsed, false, ToolErrorMapper.Map(ex)?.Code ?? "unexpected_error"); } catch { }
             throw;
         }
     }

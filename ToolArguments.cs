@@ -18,6 +18,12 @@ internal static class ToolArguments
 
     public static bool TryGetPath(JsonElement arguments, out string path)
     {
+        path = string.Empty;
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
         foreach (var propertyName in PathPropertyNames)
         {
             if (!arguments.TryGetProperty(propertyName, out var node)

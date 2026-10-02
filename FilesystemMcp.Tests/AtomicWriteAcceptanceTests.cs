@@ -1,4 +1,3 @@
-using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
@@ -477,27 +476,6 @@ public sealed class AtomicWriteAcceptanceTests
     private static Task<(string NewText, string NewHash)> Replace(PathPolicy policy, string next, CancellationToken token = default) =>
         new FileService(policy).ReplaceInFileAsync("file.txt", "old", next, FileTextHelper.ComputeContentHashes("old\ntext").Sha256, token);
     private static string[] Temps(Sandbox sandbox) => Directory.GetFiles(sandbox.Workspace, ".filesystemmcp-*.tmp");
-
-    private sealed class ProcessGate : IAsyncDisposable
-    {
-        private readonly string _name = "filesystemmcp-tests-" + Guid.NewGuid().ToString("N");
-        private readonly NamedPipeServerStream _pipe;
-        private StreamReader? _reader;
-        private StreamWriter? _writer;
-        internal ProcessGate() => _pipe = new NamedPipeServerStream(_name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        internal async Task<ServerProcess> Start(string workspace)
-        {
-            var connected = _pipe.WaitForConnectionAsync();
-            var server = await ServerProcess.StartAsync(workspace, executable: ServerProcess.ProtectedExecutable, environment: new Dictionary<string, string>
-            { ["FS_TEST_ATOMIC_PIPE"] = _name, ["FS_TEST_ATOMIC_POINTS"] = "BeforeLock,LockContended,BeforeCommit" });
-            await connected.WaitAsync(TimeSpan.FromSeconds(5));
-            _reader = new StreamReader(_pipe, leaveOpen: true); _writer = new StreamWriter(_pipe, leaveOpen: true) { AutoFlush = true };
-            return server;
-        }
-        internal async Task At(string point) => Assert.Equal(point, await _reader!.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)));
-        internal Task Release() => _writer!.WriteLineAsync("continue");
-        public async ValueTask DisposeAsync() { _reader?.Dispose(); _writer?.Dispose(); await _pipe.DisposeAsync(); }
-    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateHardLinkW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CreateHardLink(string name, string existing, IntPtr security);

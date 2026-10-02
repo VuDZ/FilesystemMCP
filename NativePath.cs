@@ -11,25 +11,48 @@ internal static partial class NativePath
     private const uint Reparse = 0x00200000, Backup = 0x02000000;
     internal readonly record struct DirectoryIdentity(ulong Volume, ulong Low, ulong High);
 
-    internal static DirectoryIdentity GetDirectoryIdentity(string path)
+    internal static DirectoryIdentity GetDirectoryIdentity(string path) =>
+        GetDirectoryIdentity(path, preserveNativeError: false);
+
+    /// <summary>
+    /// Resolves a directory identity. <paramref name="preserveNativeError"/> is used
+    /// only by search: there a failed metadata open must surface its original native
+    /// error so it classifies as <c>file_locked</c>/<c>access_denied</c>/<c>file_not_found</c>
+    /// instead of a generic <c>path_changed</c>. Policy and atomic-write callers keep
+    /// the fail-closed <c>path_changed</c> behaviour.
+    /// </summary>
+    internal static DirectoryIdentity GetDirectoryIdentity(string path, bool preserveNativeError)
     {
         if (OperatingSystem.IsWindows())
         {
-            using var handle = OpenWindowsDirectoryForMetadata(path);
+            using var handle = OpenWindowsDirectoryForMetadata(path, followLinks: false, preserveNativeError);
             if (!GetFileInformationByHandleEx(handle, 18, out FileIdInformation identity, 24))
-                throw PathPolicy.Error("path_changed");
+                throw MetadataFailure("path_changed", preserveNativeError);
             return new(identity.Volume, identity.Low, identity.High);
         }
         if ((OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) && IntPtr.Size == 8)
         {
             var flags = OperatingSystem.IsLinux() ? 0x10000 | 0x20000 | 0x80000 : 0x100000 | 0x100 | 0x1000000;
             var fd = Open(path, flags, 0);
+            // POSIX sharing is advisory, so a failed open stays fail-closed rather
+            // than being classified as a lock.
             if (fd < 0) throw PathPolicy.Error("path_changed");
             using var handle = new SafeFileHandle((IntPtr)fd, true);
             var identity = UnixIdentity(handle);
             return new(unchecked((ulong)identity.Device), unchecked((ulong)identity.Inode), 0);
         }
         throw PathPolicy.Error("path_changed");
+    }
+
+    private static Exception MetadataFailure(string code, bool preserveNativeError)
+    {
+        if (preserveNativeError)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error != 0) return new IOException("Cannot read directory metadata.", new Win32Exception(error));
+        }
+
+        return PathPolicy.Error(code);
     }
 
     internal static string GetPhysicalDirectoryPath(string path)
@@ -39,12 +62,28 @@ internal static partial class NativePath
         return FinalWindowsPath(handle);
     }
 
-    private static SafeFileHandle OpenWindowsDirectoryForMetadata(string path, bool followLinks = false)
+    private static SafeFileHandle OpenWindowsDirectoryForMetadata(string path, bool followLinks = false, bool preserveNativeError = false)
     {
         var handle = CreateFile(path, 0x80, 7, IntPtr.Zero, 3, Backup | (followLinks ? 0 : Reparse), IntPtr.Zero);
-        if (handle.IsInvalid || !GetFileInformationByHandleEx(handle, 9, out AttributeTag info, 8)
-            || (info.Attributes & 0x400) != 0 || (info.Attributes & 0x10) == 0)
-        { handle.Dispose(); throw PathPolicy.Error("path_changed"); }
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw preserveNativeError && error != 0
+                ? new IOException("Cannot open directory for metadata.", new Win32Exception(error))
+                : PathPolicy.Error("path_changed");
+        }
+
+        var inspected = GetFileInformationByHandleEx(handle, 9, out AttributeTag info, 8);
+        if (!inspected || (info.Attributes & 0x400) != 0 || (info.Attributes & 0x10) == 0)
+        {
+            var error = inspected ? 0 : Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw preserveNativeError && error != 0
+                ? new IOException("Cannot inspect directory metadata.", new Win32Exception(error))
+                : PathPolicy.Error("path_changed");
+        }
+
         return handle;
     }
     internal static void ValidateReparseTag(uint tag)

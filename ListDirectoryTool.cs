@@ -41,12 +41,27 @@ internal sealed class ListDirectoryTool : IMcpTool
         var path = ToolArguments.GetRequiredPath(arguments);
 
         var resolved = _policy.Resolve(path);
-        if (!Directory.Exists(resolved))
+
+        List<string> entries;
+        try
         {
-            throw new DirectoryNotFoundException("Directory not found.");
+            entries = Directory.EnumerateFileSystemEntries(resolved)
+                .OrderBy(static p => p, PathPolicy.Comparer)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                throw;
+            }
+
+            // Recognized failures become operational codes; genuinely unexpected
+            // ones (e.g. ERROR_DIRECTORY when the path is a file) are left to
+            // propagate as an internal error instead of being mislabeled.
+            throw FileErrorClassifier.Translate(ex);
         }
 
-        var entries = Directory.EnumerateFileSystemEntries(resolved).OrderBy(static p => p, PathPolicy.Comparer);
         var buffer = new ArrayBufferWriter<byte>(4096);
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -54,7 +69,22 @@ internal sealed class ListDirectoryTool : IMcpTool
             writer.WriteStartArray("entries");
             foreach (var entry in entries)
             {
-                var attributes = File.GetAttributes(entry);
+                FileAttributes attributes;
+                try
+                {
+                    attributes = File.GetAttributes(entry);
+                }
+                catch (Exception ex)
+                {
+                    if (ex is OperationCanceledException)
+                    {
+                        throw;
+                    }
+
+                    // Per-entry lock/acl/not-found surfaces as an operational code.
+                    throw FileErrorClassifier.Translate(ex);
+                }
+
                 writer.WriteStartObject();
                 writer.WriteString("name", Path.GetFileName(entry));
                 writer.WriteString("type", (attributes & FileAttributes.ReparsePoint) != 0 ? "link"

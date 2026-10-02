@@ -5,7 +5,7 @@ namespace FilesystemMcp;
 
 internal static class LogSanitizer
 {
-    private const int DefaultMaxLength = 200;
+    internal const int DefaultMaxLength = 200;
     private const int ContentMaxLength = 80;
 
     private static readonly HashSet<string> ContentPropertyNames = new(StringComparer.OrdinalIgnoreCase)
@@ -24,6 +24,38 @@ internal static class LogSanitizer
     {
         var builder = new StringBuilder(256);
         AppendElement(element, builder, depth: 0, maxDepth);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Bounded, single-line text shared by diagnostics and by client-visible error
+    /// details: control characters are flattened so a value cannot forge extra log
+    /// lines or JSON structure, and truncation is marked explicitly instead of
+    /// silently editing the value.
+    /// </summary>
+    public static string SanitizeText(string? value, int maxLength = DefaultMaxLength)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var truncated = value.Length > maxLength;
+        var limit = truncated ? maxLength : value.Length;
+        var builder = new StringBuilder(limit + 24);
+        for (var i = 0; i < limit; i++)
+        {
+            var ch = value[i];
+            builder.Append(char.IsControl(ch) ? ' ' : ch);
+        }
+
+        if (truncated)
+        {
+            builder.Append("…[truncated, ");
+            builder.Append(value.Length);
+            builder.Append(" chars]");
+        }
+
         return builder.ToString();
     }
 

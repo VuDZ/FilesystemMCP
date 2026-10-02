@@ -8,6 +8,14 @@ internal static class Program
     internal static AtomicWriteDependencies? AtomicWritesForHost { get; set; }
     private const string DefaultProtocolVersion = "2024-11-05";
     private const string ServerName = "FilesystemMCP";
+    private const int InvalidParamsCode = -32602;
+    private const int InternalErrorCode = -32603;
+    private const int ParseErrorCode = -32700;
+    // Legacy direct RPC methods keep the accepted FS-01/FS-04 envelope: a JSON-RPC
+    // error whose message is the machine code. FS-12 removes those methods; routing
+    // their classification through ToolErrorMapper keeps the code set identical to
+    // tools/call without changing the accepted envelope. See docs/04-file-locks.md.
+    private const int LegacyOperationalErrorCode = -32001;
     private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
     private static readonly JsonElement EmptyPromptsList = ParseJsonElement("""{"prompts":[]}""");
     private static readonly JsonElement EmptyResourcesList = ParseJsonElement("""{"resources":[]}""");
@@ -59,23 +67,30 @@ internal static class Program
                 request = JsonSerializer.Deserialize(line, McpJsonContext.Default.JsonRpcRequest);
                 response = await ProcessRequestAsync(request, fileService, mutationService, policy, toolRegistry);
             }
-            catch (PathPolicyException ex)
+            catch (ArgumentException ex) when (ex is not ArgumentNullException)
             {
-                response = CreateErrorResponse(request?.Id, -32001, ex.Code);
+                // Client-supplied arguments of any entry point. ArgumentNullException is
+                // excluded: it is a contract check on injected services, i.e. a defect.
+                response = CreateInvalidParamsResponse(request?.Id, ex);
             }
-            catch (MutationException ex)
+            catch (Exception ex) when (ToolErrorMapper.TryMap(ex, requestedPath: null, out var operational))
             {
-                response = CreateErrorResponse(request?.Id, -32001, ex.Code);
+                // Legacy direct RPC methods. tools/call never arrives here: it renders the
+                // same mapped code as an isError result (see HandleToolsCallAsync).
+                response = CreateErrorResponse(request?.Id, LegacyOperationalErrorCode, operational.Code);
             }
             catch (Exception ex)
             {
-                McpLogger.LogError("Request processing failed", ex);
-                var code = ex is JsonException ? -32700 : -32603;
-                var message = ex is JsonException ? "Parse error" : "Internal error";
+                // An unexpected defect: the client gets a neutral message and a correlation
+                // id, the full exception goes to the best-effort log and never to the wire.
+                var correlationId = ToolErrorMapper.NewCorrelationId();
+                try { McpLogger.LogError($"Unhandled request failure (correlationId={correlationId})", ex); } catch { }
+                var isParseError = ex is JsonException;
                 response = CreateErrorResponse(
                     id: request?.Id,
-                    code: code,
-                    message: message);
+                    code: isParseError ? ParseErrorCode : InternalErrorCode,
+                    message: isParseError ? "Parse error" : "Internal error",
+                    correlationId: correlationId);
             }
 
             if (response is null || response.Id is null || response.Id.Value.ValueKind == JsonValueKind.Undefined)
@@ -173,16 +188,29 @@ internal static class Program
 
     private static async Task<JsonRpcResponse> HandleToolsCallAsync(JsonRpcRequest request, ToolRegistry toolRegistry)
     {
-        var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ToolsCallParams);
+        ToolsCallParams? parameters;
+        try
+        {
+            parameters = DeserializeParams(request.Params, McpJsonContext.Default.ToolsCallParams);
+        }
+        catch (JsonException)
+        {
+            // A params node of the wrong shape is an invalid-params failure (FS-05 owns
+            // tools/call argument validation); a syntactically broken frame is FS-13.
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid tools/call params.");
+        }
+
         if (parameters is null || string.IsNullOrWhiteSpace(parameters.Name))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid tools/call params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid tools/call params.");
         }
 
         var arguments = parameters.Arguments is null
             || parameters.Arguments.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
             ? EmptyObject()
             : parameters.Arguments.Value;
+
+        ToolArguments.TryGetPath(arguments, out var requestedPath);
 
         try
         {
@@ -194,23 +222,44 @@ internal static class Program
             var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult);
             return CreateResultResponse(request.Id, payload);
         }
-        catch (PathPolicyException ex)
+        catch (UnknownToolException ex)
         {
-            var text = "{\"code\":\"" + ex.Code + "\",\"message\":\"" + ex.Message + "\"}";
-            var result = new ToolsCallResult(new[] { new ToolCallContent("text", text) }, true);
-            return CreateResultResponse(request.Id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
+            return CreateErrorResponse(request.Id, InvalidParamsCode, LogSanitizer.SanitizeText(ex.Message, ToolErrorMapper.MaxMessageLength));
         }
-        catch (MutationException ex)
+        catch (ArgumentException ex) when (ex is not ArgumentNullException)
         {
-            var text = JsonSerializer.Serialize(new ToolOperationError(ex.Code, ex.Message), McpJsonContext.Default.ToolOperationError);
-            var result = new ToolsCallResult(new[] { new ToolCallContent("text", text) }, true);
-            return CreateResultResponse(request.Id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
+            return CreateInvalidParamsResponse(request.Id, ex);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ToolErrorMapper.TryMap(ex, requestedPath, out var error))
         {
-            McpLogger.LogError("Tool execution failed", ex);
-            return CreateErrorResponse(request.Id, -32603, "Internal error");
+            // Expected operational failure: result.isError with one serialized
+            // {code,message,details?} object. Never built by string concatenation.
+            return CreateToolErrorResponse(request.Id, error);
         }
+
+        // Any other failure is an unexpected defect: it falls through to the single
+        // -32603 correlation path in Main, which logs it and never echoes it.
+    }
+
+    private static JsonRpcResponse CreateToolErrorResponse(JsonElement? id, ToolOperationError error)
+    {
+        var text = JsonSerializer.Serialize(error, McpJsonContext.Default.ToolOperationError);
+        var result = new ToolsCallResult(
+            Content: new[] { new ToolCallContent("text", text) },
+            IsError: true);
+        return CreateResultResponse(id, JsonSerializer.SerializeToElement(result, McpJsonContext.Default.ToolsCallResult));
+    }
+
+    /// <summary>
+    /// Invalid-params reply. The client gets a fixed product message; the bounded,
+    /// sanitized .NET argument text goes to the best-effort log instead, because that
+    /// text is platform text this server does not own (a future framework message could
+    /// embed a host path). Code -32602 is the machine-readable part.
+    /// </summary>
+    private static JsonRpcResponse CreateInvalidParamsResponse(JsonElement? id, Exception exception)
+    {
+        try { McpLogger.LogInfo("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception)); } catch { }
+        return CreateErrorResponse(id, InvalidParamsCode, "Invalid arguments.");
     }
 
     private static async Task<JsonRpcResponse> HandleReadFileAsync(JsonRpcRequest request, FileService fileService)
@@ -218,7 +267,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ReadFileParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid read_file params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid read_file params.");
         }
 
         var options = new ReadFileOptions(
@@ -236,7 +285,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.CreateFileParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid create_file params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid create_file params.");
         }
 
         var result = await mutationService.CreateFileAsync(path, parameters.Content ?? string.Empty);
@@ -249,7 +298,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ReplaceInFileParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid replace_in_file params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid replace_in_file params.");
         }
 
         var result = await mutationService.ReplaceInFileAsync(
@@ -267,7 +316,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.ListDirectoryParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid list_directory params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid list_directory params.");
         }
 
         var fullPath = policy.Resolve(path);
@@ -281,7 +330,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.SearchParams);
         if (parameters is null || string.IsNullOrWhiteSpace(parameters.Regex) || string.IsNullOrWhiteSpace(parameters.FileMask))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid search params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid search params.");
         }
 
         var result = new SearchResult(Array.Empty<string>());
@@ -294,7 +343,7 @@ internal static class Program
         var parameters = DeserializeParams(request.Params, McpJsonContext.Default.AppendToFileParams);
         if (parameters is null || !TryResolvePathParam(request.Params, out var path))
         {
-            return CreateErrorResponse(request.Id, -32602, "Missing or invalid append_to_file params.");
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid append_to_file params.");
         }
 
         var fullPath = policy.Resolve(path);
@@ -355,7 +404,12 @@ internal static class Program
     private static JsonRpcResponse CreateResultResponse(JsonElement? id, JsonElement result) =>
         new(JsonRpcConstants.Version, id, result, null);
 
-    private static JsonRpcResponse CreateErrorResponse(JsonElement? id, int code, string message) =>
-        new(JsonRpcConstants.Version, id, null, new JsonRpcError(code, message));
+    private static JsonRpcResponse CreateErrorResponse(JsonElement? id, int code, string message, string? correlationId = null) =>
+        new(JsonRpcConstants.Version, id, null, new JsonRpcError(
+            code,
+            message,
+            correlationId is null
+                ? null
+                : JsonSerializer.SerializeToElement(new ErrorCorrelationData(correlationId), McpJsonContext.Default.ErrorCorrelationData)));
 
 }

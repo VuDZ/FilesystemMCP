@@ -32,9 +32,11 @@ public sealed class ProtocolTests
         Assert.Equal("2024-11-05", reply.GetProperty("result").GetProperty("protocolVersion").GetString());
     }
 
-    [Fact, Trait("Status", "KnownDefect")]
+    [Fact, Trait("Status", "Baseline")]
     public async Task ParamsArrayIsInvalidParamsInsteadOfParseError()
     {
+        // FS-05 owns tools/call params-shape validation, so this case is now a control:
+        // a params node of the wrong shape must be -32602, never a syntax parse error.
         using var sandbox = new Sandbox();
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
         var reply = await server.CallAsync("tools/call", new object[] { "invalid params" });
