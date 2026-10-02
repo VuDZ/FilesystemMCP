@@ -21,7 +21,10 @@ internal sealed record JsonRpcNotification(
 
 internal sealed record JsonRpcResponse(
     [property: JsonPropertyName("jsonrpc")] string JsonRpc,
-    [property: JsonPropertyName("id")] JsonElement? Id,
+    // An unattributed failure must still carry the member: JSON-RPC 2.0 puts `id: null`
+    // on the wire, and FS-07 requires exactly that for a rejected frame. The reply to a
+    // request keeps its own id, so only the null case is affected by the override.
+    [property: JsonPropertyName("id"), JsonIgnore(Condition = JsonIgnoreCondition.Never)] JsonElement? Id,
     [property: JsonPropertyName("result")] JsonElement? Result,
     [property: JsonPropertyName("error")] JsonRpcError? Error);
 
@@ -130,12 +133,25 @@ internal sealed record ToolsCallResult(
 
 // FS-05 error object: the machine code is the API, the message is advisory and
 // details stay bounded (a safe relative path and the retryable flag at most).
+// truncationReason is the FS-07 addition: it preserves the cause of an already-cut
+// partial result when the transport has to refuse the frame itself.
 internal sealed record ToolOperationError(string Code, string Message, ToolErrorDetails? Details = null);
 internal sealed record ToolErrorDetails(
     [property: JsonPropertyName("requested")] string? Requested,
-    [property: JsonPropertyName("retryable")] bool Retryable);
+    [property: JsonPropertyName("retryable")] bool Retryable,
+    [property: JsonPropertyName("truncation_reason")] string? TruncationReason = null);
 internal sealed record ErrorCorrelationData(
     [property: JsonPropertyName("correlationId")] string CorrelationId);
+
+/// <summary>
+/// Why the transport had to replace a whole frame. It rides in <c>error.data</c> rather than
+/// in a tool error's <c>details</c>, because the cases that need it most — a non-tool result
+/// such as a large <c>tools/list</c>, and a minimal refusal — have no tool-error envelope to
+/// carry the field, and the truncation cause must still reach the client.
+/// </summary>
+internal sealed record TruncationReasonData(
+    [property: JsonPropertyName("truncation_reason")] string TruncationReason);
+
 internal sealed record CreateFileToolResult(string Status, string Md5, string Sha256);
 
 [JsonSourceGenerationOptions(
@@ -171,6 +187,7 @@ internal sealed record CreateFileToolResult(string Status, string Md5, string Sh
 [JsonSerializable(typeof(ToolOperationError))]
 [JsonSerializable(typeof(ToolErrorDetails))]
 [JsonSerializable(typeof(ErrorCorrelationData))]
+[JsonSerializable(typeof(TruncationReasonData))]
 [JsonSerializable(typeof(CreateFileToolResult))]
 internal partial class McpJsonContext : JsonSerializerContext
 {

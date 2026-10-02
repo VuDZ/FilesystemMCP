@@ -10,6 +10,13 @@ internal sealed class PathPolicy
     public string Root { get; }
     public string LogicalRoot { get; }
     public ServerOptions Options { get; }
+
+    /// <summary>
+    /// The immutable FS-07 budgets. Exposed here because the writer must refuse an oversized
+    /// result before its commit point, and the policy is what every mutation entry point
+    /// already carries.
+    /// </summary>
+    public ResourceBudget Budget => Options.Budget;
     public static StringComparer Comparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     internal Action? BeforeWriteCommit { get; set; }
     internal Action? AfterWriteParentsPinned { get; set; }

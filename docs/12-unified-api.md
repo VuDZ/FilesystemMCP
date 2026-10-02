@@ -6,6 +6,10 @@
 
 Стандартные tools и custom RPC methods имеют разные write/create semantics. list/search/append custom methods — заглушки с успешным result. Sample рекомендует несуществующий append tool. Direct create содержит File.Exists→Create race.
 
+## Состояние после FS-07 (1.8.0)
+
+Пункт 12 ниже (удаление прямых RPC-методов) **не выполнен** — это работа FS-12. Но расхождение реализаций, из-за которого пункт 12 существует, уже устранено: `read_file`, `create_file`, `replace_in_file`, `list_directory` и `search` больше не имеют собственных stub/divergent путей, они вызывают тот же registered tool, что и `tools/call`. Практическое следствие для приёмки: `UnifiedApiTests.CustomRpcMethodsAreRejectedInsteadOfExecutingDivergentOrStubOperations` падает на всех шести `InlineData`, потому что методы теперь **выполняют** операцию, а не возвращают заглушку или успешный псевдорезультат. Это ожидаемое промежуточное состояние: FS-07 закрыл именно расхождение semantics, а FS-12 удаляет сами методы и переводит их KnownDefect-случаи в `-32601`. До тех пор оболочка ответа legacy-методов остаётся принятой FS-01/FS-04 (`-32001`, без `details`), а лимиты, коды и cancellation у них общие с tool (FS-07 R16).
+
 ## Решение и контракт
 
 - Сохранить стандартный MCP tools/call и пять tools: list_directory, search, create_file, read_file, replace_in_file.

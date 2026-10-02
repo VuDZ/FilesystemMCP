@@ -21,6 +21,14 @@
     <ProjectReference Include="../FilesystemMCP.csproj" AdditionalProperties="PublishAot=false;PublishTrimmed=false" />
     <ProjectReference Include="TestHost/FilesystemMcp.TestHost.csproj" ReferenceOutputAssembly="false" />
     <Compile Remove="TestHost/**/*.cs" />
+    <!--
+      Retired mechanism probe: it ended in a deliberate Assert.Fail to print measurements,
+      and RequestDeadlineTests.cs now guards the same mechanism as a real assertion. Kept on
+      disk only because this sandbox denies file deletion; excluded so it is not a test.
+    -->
+    <Compile Remove="AmbientProbeTests.cs" />
+    <!-- Local scratch output: the SDK's default glob would otherwise compile it in. -->
+    <Compile Remove="../buildwork/**/*.cs" />
     <None Include="../install2opencode.ps1" Link="assets/install2opencode.ps1" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../AGENTS.md.sample" Link="assets/AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

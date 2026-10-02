@@ -104,7 +104,7 @@ public sealed class LoggingTests
     public async Task DeniedLogFileKeepsPriorBytesAndReportsOnce()
     {
         var directory = NewTempDirectory("fs06-denied-file");
-        var stderr = new StringWriter();
+        var stderr = NewThreadSafeStderr();
         var filePath = Path.Combine(directory, Logging.SessionFileName(DateTimeOffset.UtcNow, Environment.ProcessId));
         const string prior = "prior-session-bytes";
         FileSystemAccessRule? deny = null;
@@ -133,7 +133,8 @@ public sealed class LoggingTests
             registry.Register(new CreateFileTool(sandbox.Workspace));
             var created = await registry.ExecuteToolAsync(
                 "create_file",
-                ServerProcess.Arguments(new { path = "created.txt", content = "valuable" }));
+                ServerProcess.Arguments(new { path = "created.txt", content = "valuable" }),
+                limiter: null);
             Assert.Equal("success", ServerProcess.JsonDocumentParse(created).GetProperty("status").GetString());
             Assert.Equal("valuable", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "created.txt")));
             Assert.Equal(prior, ReadShared(filePath));
@@ -238,7 +239,7 @@ public sealed class LoggingTests
     public void WriteFailureIsReportedOnceAndNeverPropagates()
     {
         var directory = NewTempDirectory("fs06-write-failure");
-        var stderr = new StringWriter();
+        var stderr = NewThreadSafeStderr();
         try
         {
             McpLogger.ResetForTests();
@@ -286,7 +287,7 @@ public sealed class LoggingTests
     public void SinkInternalWriteFailureIsReportedOnceAndNeverPropagates()
     {
         var directory = NewTempDirectory("fs06-sink-write");
-        var stderr = new StringWriter();
+        var stderr = NewThreadSafeStderr();
         try
         {
             var sink = new LogFileSink(directory, "mcplog-scope.log");
@@ -337,7 +338,7 @@ public sealed class LoggingTests
     {
         var directory = NewTempDirectory("fs06-unavailable");
         var occupied = Path.Combine(directory, "logs");
-        var writer = new StringWriter();
+        var writer = NewThreadSafeStderr();
         try
         {
             File.WriteAllText(occupied, "not a directory");
@@ -430,7 +431,8 @@ public sealed class LoggingTests
         registry.Register(new CreateFileTool(sandbox.Workspace));
         var result = await registry.ExecuteToolAsync(
             "create_file",
-            ServerProcess.Arguments(new { path = "file.txt", content = "created\r\n" }));
+            ServerProcess.Arguments(new { path = "file.txt", content = "created\r\n" }),
+            limiter: null);
         Assert.True(logged);
         Assert.Equal("success", ServerProcess.JsonDocumentParse(result).GetProperty("status").GetString());
         Assert.Equal(
@@ -455,7 +457,8 @@ public sealed class LoggingTests
         registry.Register(new ThrowingTool());
         var exception = await Assert.ThrowsAsync<IOException>(() => registry.ExecuteToolAsync(
             "throwing_tool",
-            ServerProcess.Arguments(new { })));
+            ServerProcess.Arguments(new { }),
+            limiter: null));
         Assert.True(logged);
         Assert.Equal("original tool failure", exception.Message);
     }
@@ -617,7 +620,7 @@ public sealed class LoggingTests
     /// <summary>Starts the real file sink in a private directory and restores global state on exit.</summary>
     private sealed class InProcessLogScope : IDisposable
     {
-        private readonly StringWriter _stderr = new();
+        private readonly StringWriter _stderr = NewThreadSafeStderr();
 
         internal InProcessLogScope()
         {
@@ -653,6 +656,73 @@ public sealed class LoggingTests
             DeleteDirectory(Directory);
         }
     }
+
+    /// <summary>
+    /// A stderr fallback target that is safe to read while the server writes to it.
+    /// <see cref="StringWriter"/> is not thread-safe, and since FS-07 the logger records from
+    /// worker threads: the poll loops below read the buffer while a tool running on another
+    /// thread writes, which surfaced as an <see cref="ArgumentOutOfRangeException"/> from
+    /// <c>StringBuilder.ToString</c> — a harness race, not a logging defect.
+    /// </summary>
+    /// <remarks>
+    /// A subclass rather than <see cref="TextWriter.Synchronized"/>: that returns an opaque
+    /// <c>SyncTextWriter</c>, and these tests read the buffer directly through
+    /// <see cref="StderrLines"/>. Both sides must take the same lock — reading alone is not
+    /// enough, because the write itself is what tears the buffer while a reader copies it —
+    /// so every write entry point the logger uses is synchronized on the same monitor.
+    /// </remarks>
+    private sealed class ThreadSafeStringWriter : StringWriter
+    {
+        public override string ToString()
+        {
+            lock (GetStringBuilder())
+            {
+                return base.ToString();
+            }
+        }
+
+        public override void Write(string? value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(value);
+            }
+        }
+
+        public override void Write(char value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(value);
+            }
+        }
+
+        public override void WriteLine(string? value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.WriteLine(value);
+            }
+        }
+
+        public override void WriteLine()
+        {
+            lock (GetStringBuilder())
+            {
+                base.WriteLine();
+            }
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(buffer, index, count);
+            }
+        }
+    }
+
+    private static StringWriter NewThreadSafeStderr() => new ThreadSafeStringWriter();
 
     private static string[] StderrLines(StringWriter writer) =>
         writer.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -788,7 +858,7 @@ public sealed class LoggingTests
         public string Description => "Fails before any completion log.";
         public string InputSchemaJson => "{}";
 
-        public Task<string> ExecuteAsync(JsonElement arguments) =>
+        public Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken) =>
             Task.FromException<string>(new IOException("original tool failure"));
     }
 }

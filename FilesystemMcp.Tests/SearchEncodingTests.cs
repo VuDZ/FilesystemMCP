@@ -19,7 +19,7 @@ public sealed class SearchEncodingTests
         sandbox.Write("файл.txt", "first\r\nneedle Привет\r\n", TextEncodingTests.EncodingFor(encoding));
         var read = await new FileService(sandbox.Workspace).ReadFileAsync("файл.txt", new());
         Assert.Contains("needle Привет", read.Text);
-        var raw = await new SearchTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }));
+        var raw = await new SearchTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default);
         var payload = ServerProcess.JsonDocumentParse(raw);
         // Support today's array and the FS-04 object envelope; encoding behavior is independent.
         var matches = payload.ValueKind == System.Text.Json.JsonValueKind.Array ? payload : payload.GetProperty("matches");

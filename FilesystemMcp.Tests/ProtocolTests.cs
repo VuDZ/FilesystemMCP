@@ -6,7 +6,7 @@ namespace FilesystemMcp.Tests;
 [Trait("Spec", "FS-13")]
 public sealed class ProtocolTests
 {
-    [Fact, Trait("Status", "KnownDefect")]
+    [Fact, Trait("Status", "Baseline")]
     public async Task MalformedJsonReturnsParseErrorWithExplicitNullId()
     {
         using var sandbox = new Sandbox();

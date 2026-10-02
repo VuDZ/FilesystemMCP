@@ -32,7 +32,7 @@ internal sealed class CreateFileTool : IMcpTool
         + "Path argument: path, filePath, or file_path (one required).";
     public string InputSchemaJson => Schema;
 
-    public async Task<string> ExecuteAsync(JsonElement arguments)
+    public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         if (arguments.ValueKind != JsonValueKind.Object)
         {
@@ -49,7 +49,7 @@ internal sealed class CreateFileTool : IMcpTool
         }
 
         var content = contentNode.GetString() ?? string.Empty;
-        var result = await AtomicFileWriter.WriteTextAsync(_policy, path, content, true);
+        var result = await AtomicFileWriter.WriteTextAsync(_policy, path, content, true, cancellationToken);
         return JsonSerializer.Serialize(new CreateFileToolResult("success", result.Md5, result.Sha256), McpJsonContext.Default.CreateFileToolResult);
     }
 }

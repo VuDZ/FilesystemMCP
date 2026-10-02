@@ -94,7 +94,7 @@ public sealed class FileLocksTests
             AfterProbe = path => { if (PathPolicy.Comparer.Equals(path, victim)) File.Delete(path); }
         };
         var payload = ServerProcess.JsonDocumentParse(await tool.ExecuteAsync(
-            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         // The probe and the search share one handle, so deleting the path mid-read
         // must not abort nor lose the already-open file's matches.
         Assert.Equal(2, payload.GetProperty("matches").GetArrayLength());
@@ -120,7 +120,7 @@ public sealed class FileLocksTests
             Assert.Equal("access_denied", readError.Code);
 
             var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
             Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "allowed.txt");
             Assert.Equal(1, payload.GetProperty("skipped_count").GetInt32());
             Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "access_denied");
@@ -149,11 +149,11 @@ public sealed class FileLocksTests
         try
         {
             var listError = await Assert.ThrowsAsync<MutationException>(
-                () => new ListDirectoryTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { path = "denied-dir" })));
+                () => new ListDirectoryTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { path = "denied-dir" }), default));
             Assert.Equal("access_denied", listError.Code);
 
             var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-                ServerProcess.Arguments(new { regex = "needle" })));
+                ServerProcess.Arguments(new { regex = "needle" }), default));
             Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "allowed.txt");
             Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "access_denied");
             Assert.True(payload.GetProperty("incomplete").GetBoolean());
@@ -213,7 +213,7 @@ public sealed class FileLocksTests
             sandbox.Write("accessible.txt", "needle");
 
             var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
             Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "accessible.txt");
             Assert.Equal(lockedCount, payload.GetProperty("skipped_count").GetInt32());
             Assert.Equal(50, payload.GetProperty("skipped").GetArrayLength());
@@ -235,7 +235,7 @@ public sealed class FileLocksTests
         using var sandbox = new Sandbox();
         sandbox.Write("many.txt", string.Join("\n", Enumerable.Repeat("needle", 60)));
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         Assert.Equal(50, payload.GetProperty("matches").GetArrayLength());
         Assert.True(payload.GetProperty("truncated").GetBoolean());
         Assert.False(payload.GetProperty("incomplete").GetBoolean());
@@ -269,7 +269,7 @@ public sealed class FileLocksTests
             }
         };
         var payload = ServerProcess.JsonDocumentParse(await tool.ExecuteAsync(
-            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "accessible.txt");
         Assert.True(payload.GetProperty("incomplete").GetBoolean(), "vanished directory must make the search incomplete");
         Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "file_not_found");
@@ -290,7 +290,7 @@ public sealed class FileLocksTests
         try
         {
             var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+                ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
             Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "accessible.txt");
             Assert.True(payload.GetProperty("incomplete").GetBoolean());
             Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "access_denied");
@@ -319,7 +319,7 @@ public sealed class FileLocksTests
             }
         };
         var payload = ServerProcess.JsonDocumentParse(await tool.ExecuteAsync(
-            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "accessible.txt");
         Assert.True(payload.GetProperty("incomplete").GetBoolean());
         Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "file_not_found");
@@ -335,7 +335,7 @@ public sealed class FileLocksTests
         using var handle = CreateDirectoryHandle(directory);
         Assert.False(handle.IsInvalid, "fixture could not hold the directory open");
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
-            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" })));
+            ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         Assert.Contains(payload.GetProperty("matches").EnumerateArray(), match => match.GetProperty("path").GetString() == "accessible.txt");
         Assert.True(payload.GetProperty("incomplete").GetBoolean());
         Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("reason").GetString() == "file_locked");

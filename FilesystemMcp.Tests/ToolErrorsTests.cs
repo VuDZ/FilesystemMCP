@@ -496,16 +496,23 @@ public sealed class ToolErrorsTests
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", "content");
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
-        // Sent back to back: a duplicated answer to the first request would be read
-        // here with the wrong id instead of the second request's reply.
+        // Sent back to back. FS-07 answers a cheap request (ping) independently of a tool
+        // that is still running, so the two replies may legitimately arrive in either
+        // order; what must not happen is a duplicated or missing answer.
         await server.SendRawAsync("{\"jsonrpc\":\"2.0\",\"id\":501,\"method\":\"tools/call\",\"params\":{\"name\":\"list_directory\",\"arguments\":{\"path\":\"file.txt\"}}}");
         await server.SendRawAsync("{\"jsonrpc\":\"2.0\",\"id\":502,\"method\":\"ping\",\"params\":{}}");
         var first = await server.ReadAsync();
-        Assert.Equal(501, first.GetProperty("id").GetInt32());
-        Assert.Equal(-32603, first.GetProperty("error").GetProperty("code").GetInt32());
         var second = await server.ReadAsync();
-        Assert.Equal(502, second.GetProperty("id").GetInt32());
-        Assert.True(second.TryGetProperty("result", out _), "Second request must be answered, not a duplicate: " + second);
+        var byId = new Dictionary<int, JsonElement>
+        {
+            [first.GetProperty("id").GetInt32()] = first,
+            [second.GetProperty("id").GetInt32()] = second
+        };
+
+        // Exactly one answer per request: no id is answered twice, none is missing.
+        Assert.Equal(new[] { 501, 502 }, byId.Keys.Order().ToArray());
+        Assert.Equal(-32603, byId[501].GetProperty("error").GetProperty("code").GetInt32());
+        Assert.True(byId[502].TryGetProperty("result", out _), "Second request must be answered, not a duplicate: " + byId[502]);
     }
 
     [Fact, Trait("Status", "Baseline")]

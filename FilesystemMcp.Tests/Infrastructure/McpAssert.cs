@@ -44,6 +44,35 @@ internal static class McpAssert
     /// <summary>Parsed <c>{code,message,details?}</c> object of an operational error result.</summary>
     public static JsonElement ErrorPayload(JsonElement response) => ServerProcess.Payload(response);
 
+    /// <summary>
+    /// The truncation cause of a reply, wherever FS-07 carries it: in a successful partial
+    /// result's payload, in a tool error's <c>details</c>, or in a frame-level refusal's
+    /// <c>error.data</c>. Callers assert the cause itself rather than the envelope, because
+    /// the contract fixes the cause and lets the envelope depend on whether the transport
+    /// had to replace the frame.
+    /// </summary>
+    public static string? TruncationReason(JsonElement response)
+    {
+        if (response.TryGetProperty("error", out var error))
+        {
+            return error.TryGetProperty("data", out var data)
+                && data.TryGetProperty("truncation_reason", out var fromError)
+                ? fromError.GetString()
+                : null;
+        }
+
+        var payload = ServerProcess.Payload(response);
+        if (payload.TryGetProperty("truncation_reason", out var reason))
+        {
+            return reason.GetString();
+        }
+
+        return payload.TryGetProperty("details", out var details)
+            && details.TryGetProperty("truncation_reason", out var fromDetails)
+            ? fromDetails.GetString()
+            : null;
+    }
+
     /// <summary>Success shape: a result without an error object and with <c>isError=false</c>.</summary>
     public static void Success(JsonElement response)
     {

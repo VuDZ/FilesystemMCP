@@ -35,7 +35,7 @@ internal sealed class ReplaceInFileTool : IMcpTool
         + "If you do not have the current hash, you MUST call 'read_file' first to get it.";
     public string InputSchemaJson => Schema;
 
-    public async Task<string> ExecuteAsync(JsonElement arguments)
+    public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         if (arguments.ValueKind != JsonValueKind.Object)
         {
@@ -51,7 +51,8 @@ internal sealed class ReplaceInFileTool : IMcpTool
             path,
             targetSnippet,
             replacementSnippet,
-            originalHash);
+            originalHash,
+            cancellationToken);
 
         var result = new ReplaceInFileToolResult(
             Status: "success",

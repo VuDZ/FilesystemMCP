@@ -44,7 +44,7 @@ internal sealed class ReadFileTool : IMcpTool
         + "Always use before replace_in_file.";
     public string InputSchemaJson => Schema;
 
-    public async Task<string> ExecuteAsync(JsonElement arguments)
+    public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         if (arguments.ValueKind != JsonValueKind.Object)
         {
@@ -59,7 +59,7 @@ internal sealed class ReadFileTool : IMcpTool
             AllowLargeRead: ParseOptionalBool(arguments, "allow_large_read"),
             MaxLines: ParseOptionalInt(arguments, "max_lines"));
 
-        var result = await _fileService.ReadFileAsync(path, options);
+        var result = await _fileService.ReadFileAsync(path, options, cancellationToken);
         return JsonSerializer.Serialize(result, McpJsonContext.Default.ReadFileResult);
     }
 

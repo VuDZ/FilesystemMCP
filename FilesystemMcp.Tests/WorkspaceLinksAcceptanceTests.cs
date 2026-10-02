@@ -303,7 +303,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         await sandbox.JunctionAsync("alias", Path.Combine(sandbox.Workspace, "real"));
         await sandbox.JunctionAsync("real/back", sandbox.Workspace);
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace, new(true)))
-            .ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" })).WaitAsync(TimeSpan.FromSeconds(3)));
+            .ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" }), default).WaitAsync(TimeSpan.FromSeconds(3)));
         Assert.Single(payload.GetProperty("matches").EnumerateArray());
         Assert.True(payload.GetProperty("incomplete").GetBoolean());
         Assert.All(payload.GetProperty("skipped").EnumerateArray(), item => Assert.Equal("already_visited", item.GetProperty("code").GetString()));
@@ -319,7 +319,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         Directory.Delete(Path.Combine(sandbox.Workspace, "target"));
         var policy = new PathPolicy(sandbox.Workspace, new(true));
         Assert.Equal("symlink_dangling", Assert.Throws<PathPolicyException>(() => policy.Resolve("dangling/new.txt")).Code);
-        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" })));
+        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" }), default));
         Assert.Single(payload.GetProperty("matches").EnumerateArray());
         Assert.Equal("symlink_dangling", Assert.Single(payload.GetProperty("skipped").EnumerateArray()).GetProperty("code").GetString());
     }
@@ -409,7 +409,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         Assert.Equal("inside", (await new FileService(allowed).ReadFileAsync("internal.txt", new())).Text);
         await new MutationService(allowed).ReplaceInFileAsync("internal.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
         Assert.Equal("changed", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "inside.txt")));
-        var list = ServerProcess.JsonDocumentParse(await new ListDirectoryTool(allowed).ExecuteAsync(ServerProcess.Arguments(new { path = "." })));
+        var list = ServerProcess.JsonDocumentParse(await new ListDirectoryTool(allowed).ExecuteAsync(ServerProcess.Arguments(new { path = "." }), default));
         Assert.Equal(2, list.GetProperty("entries").EnumerateArray().Count(item => item.GetProperty("type").GetString() == "link"));
     }
 
@@ -426,7 +426,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         Assert.Equal("symlink_dangling", Assert.Throws<PathPolicyException>(() => policy.Resolve("dangling")).Code);
         Assert.Equal("symlink_cycle", Assert.Throws<PathPolicyException>(() => policy.Resolve("self")).Code);
         Assert.Equal("symlink_cycle", Assert.Throws<PathPolicyException>(() => policy.Resolve("a")).Code);
-        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" })).WaitAsync(TimeSpan.FromSeconds(3)));
+        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" }), default).WaitAsync(TimeSpan.FromSeconds(3)));
         Assert.Single(payload.GetProperty("matches").EnumerateArray());
         Assert.Equal(4, payload.GetProperty("skipped").GetArrayLength());
         Assert.True(payload.GetProperty("incomplete").GetBoolean());
@@ -446,7 +446,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         Assert.Equal(Path.Combine(sandbox.Workspace, "real/new.txt"), policy.Resolve("second/../new.txt"));
         Assert.Throws<PathPolicyException>(() => new PathPolicy(Path.Combine(sandbox.Workspace, "first"), new(false)));
         Assert.Equal(Path.Combine(sandbox.Workspace, "real/nested"), new PathPolicy(Path.Combine(sandbox.Workspace, "first"), new(true)).Root);
-        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" })).WaitAsync(TimeSpan.FromSeconds(3)));
+        var payload = ServerProcess.JsonDocumentParse(await new SearchTool(policy).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle" }), default).WaitAsync(TimeSpan.FromSeconds(3)));
         Assert.Single(payload.GetProperty("matches").EnumerateArray());
         Assert.Contains(payload.GetProperty("skipped").EnumerateArray(), item => item.GetProperty("code").GetString() == "already_visited");
     }

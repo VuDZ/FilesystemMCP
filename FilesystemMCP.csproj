@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <Version>1.7.0</Version>
-    <AssemblyVersion>1.7.0.0</AssemblyVersion>
-    <FileVersion>1.7.0.0</FileVersion>
+    <Version>1.8.0</Version>
+    <AssemblyVersion>1.8.0.0</AssemblyVersion>
+    <FileVersion>1.8.0.0</FileVersion>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -19,6 +19,13 @@
     <!-- Legacy file guard: protocol context is defined in McpProtocol.cs -->
     <Compile Remove="McpJsonContext.cs" />
     <Compile Remove="FilesystemMcp.Tests/**/*.cs" />
+    <!--
+      Local scratch output. The SDK's default source glob is **/*.cs, so an out-of-tree
+      build directory left inside the project (a redirected OutDir, a one-off harness)
+      would feed its own generated AssemblyInfo back into this compilation and fail with
+      CS0579 duplicates. Build output belongs in bin/obj; anything else is ignored here.
+    -->
+    <Compile Remove="buildwork/**/*.cs" />
     <InternalsVisibleTo Include="FilesystemMcp.Tests" />
     <InternalsVisibleTo Include="FilesystemMcp.TestHost" />
   </ItemGroup>

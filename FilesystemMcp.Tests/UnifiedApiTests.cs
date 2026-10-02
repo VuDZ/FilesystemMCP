@@ -48,7 +48,7 @@ public sealed class UnifiedApiTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("existing.txt", "valuable");
         var error = await Assert.ThrowsAsync<MutationException>(() => new CreateFileTool(sandbox.Workspace).ExecuteAsync(
-            ServerProcess.Arguments(new { path = "existing.txt", content = "replacement" })));
+            ServerProcess.Arguments(new { path = "existing.txt", content = "replacement" }), default));
         Assert.Equal("file_exists", error.Code);
         Assert.Equal("valuable", await File.ReadAllTextAsync(path));
     }

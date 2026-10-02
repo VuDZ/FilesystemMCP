@@ -68,8 +68,10 @@ internal static class ToolErrorMessages
 /// <summary>
 /// Typed operational failure that is neither a mutation outcome nor a path-policy
 /// decision, for example an exceeded resource limit. Carries the FS-05 machine code.
+/// The mutable surface stays closed: only the FS-07 budget refusal derives from it,
+/// and that derivation exists so <c>resource_limit</c> has exactly one factory.
 /// </summary>
-internal sealed class OperationalException(string code, string message) : InvalidOperationException(message)
+internal class OperationalException(string code, string message) : InvalidOperationException(message)
 {
     public string Code { get; } = code;
 }
@@ -139,6 +141,25 @@ internal static class ToolErrorMapper
         TryMap(exception, requestedPath, out var error) ? error : null;
 
     /// <summary>
+    /// True when the failure chain contains a cancellation. The mapper treats every
+    /// cancellation as the FS-05 <c>cancelled</c> outcome, but a caller that also owns
+    /// an FS-07 deadline needs to tell the two causes apart before mapping: this asks
+    /// the same question <see cref="TryMap"/> would, without producing an error object.
+    /// </summary>
+    internal static bool IsCancellation(Exception? exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is OperationCanceledException)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// A correlation id for an unexpected defect. It is returned to the client and
     /// written to the best-effort log, so a report can be tied to one log record.
     /// </summary>
@@ -175,4 +196,15 @@ internal static class ToolErrorMapper
             code,
             ToolErrorMessages.ForCode(code, specific),
             new ToolErrorDetails(SafeRequestedPath(requested), ToolErrorMessages.IsRetryable(code)));
+
+    /// <summary>
+    /// An operational error that also carries why an otherwise honest partial result could
+    /// not be delivered. FS-07 requires the cause to survive the transport's frame-level
+    /// refusal: without this the client would see a bare <c>resource_limit</c> and lose the
+    /// fact that the operation had already been cut short by a cap or by the deadline.
+    /// </summary>
+    internal static ToolOperationError WithTruncationReason(ToolOperationError error, string truncationReason) =>
+        error.Details is { } details
+            ? error with { Details = details with { TruncationReason = truncationReason } }
+            : error with { Details = new ToolErrorDetails(null, ToolErrorMessages.IsRetryable(error.Code), truncationReason) };
 }

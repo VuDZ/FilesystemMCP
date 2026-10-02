@@ -10,8 +10,22 @@ internal sealed class FileService
     private readonly PathPolicy _policy;
     private string _workspaceRoot => _policy.Root;
 
+    /// <summary>
+    /// FS-07 read budgets. The default keeps every existing construction site working
+    /// unchanged; the composition root replaces it with the validated startup budget,
+    /// which a client can never raise through <c>tools/call</c>.
+    /// </summary>
+    internal ResourceBudget Budget { get; init; } = ResourceBudget.Default;
+
     /// <summary>Deterministic retry-observation seam for tests; null in production.</summary>
     internal Action<int>? BeforeReadRetry { get; set; }
+
+    /// <summary>
+    /// Deterministic stream seam for tests; null in production. When set, reads go
+    /// through this factory instead of opening the resolved path, so chunking, line and
+    /// byte budgets can be proven without a huge fixture.
+    /// </summary>
+    internal Func<string, Stream>? OpenReadStreamForTests { get; set; }
 
     public FileService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
@@ -36,33 +50,49 @@ internal sealed class FileService
             throw ResourceLimit();
         }
 
-        var canonicalContent = await FileTextHelper.ReadCanonicalContentAsync(resolvedPath, BeforeReadRetry, cancellationToken);
-        var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonicalContent);
-
         var isFullFileRead = !options.StartLine.HasValue && !options.EndLine.HasValue;
-        var (text, totalLines) = FileTextHelper.ExtractRequestedContent(
-            canonicalContent,
+
+        // One streaming pass replaces ReadCanonicalContentAsync + ComputeContentHashes +
+        // ExtractRequestedContent: the hashes and the line count always cover the whole
+        // file, while only the selected lines are materialized. The full-file path keeps
+        // its prefix cap (allow_large_read/max_lines) as the materialization bound, so a
+        // file over the line cap is refused after the scan instead of being turned into a
+        // huge string first.
+        //
+        // textLimit is the second, independent bound. A line cap alone does not bound
+        // memory when each line may be huge: a 1000-line file is 64 MiB at maxLineChars, so
+        // the materialized text could reach the byte budget while maxResponseChars is one
+        // megabyte. Passing the response budget here means such a file is refused during
+        // the scan, instead of being built in full and then replaced by the transport
+        // (which measured a 650 MB peak for a 64 MiB file before this bound existed).
+        var content = await FileContentReader.ReadCanonicalAsync(
+            resolvedPath,
             options.StartLine,
             options.EndLine,
-            effectiveMaxLines,
-            isFullFileRead);
+            captureFullText: isFullFileRead,
+            Budget,
+            cancellationToken,
+            OpenReadStreamForTests,
+            BeforeReadRetry,
+            maxLines: isFullFileRead ? effectiveMaxLines : null,
+            textLimit: MaterializationLimit(effectiveMaxLines));
 
         if (isFullFileRead)
         {
-            if (!options.AllowLargeRead && totalLines > DefaultMaxLines)
+            if (!options.AllowLargeRead && content.TotalLines > DefaultMaxLines)
             {
                 throw ResourceLimit();
             }
 
             if (options.AllowLargeRead
                 && !options.MaxLines.HasValue
-                && totalLines > AbsoluteMaxLines)
+                && content.TotalLines > AbsoluteMaxLines)
             {
                 throw ResourceLimit();
             }
         }
 
-        return new ReadFileResult(resolvedPath, text, md5, sha256);
+        return new ReadFileResult(resolvedPath, content.Text, content.Md5, content.Sha256);
     }
 
     public static int ResolveEffectiveMaxLines(ReadFileOptions options)
@@ -130,6 +160,26 @@ internal sealed class FileService
             throw translated;
         }
     }
+    /// <summary>
+    /// The largest selected text this read may materialize, in UTF-16 code units. It is the
+    /// response budget, because a larger payload could never be delivered: the transport
+    /// would replace it with a bounded refusal after it had already been built.
+    /// </summary>
+    /// <remarks>
+    /// It is deliberately not floored at <c>maxLineChars + 1</c>. That floor looked like it
+    /// kept an oversized line diagnosable, but the line check runs first anyway — the reader
+    /// rejects a line longer than <c>maxLineChars</c> while splitting it, before the text
+    /// budget is ever consulted — so the floor only added a case where materialization
+    /// exceeded the budget, contradicting the rule that text is not accumulated past it.
+    /// </remarks>
+    private int MaterializationLimit(int effectiveMaxLines)
+    {
+        var byResponse = Budget.MaxResponseChars > int.MaxValue ? int.MaxValue : (int)Budget.MaxResponseChars;
+        var byLine = (long)Budget.MaxLineChars + 1;
+        var byLines = effectiveMaxLines <= 0 ? byResponse : Math.Min(byResponse, (long)effectiveMaxLines * byLine);
+        return (int)Math.Clamp(byLines, 1, int.MaxValue);
+    }
+
     /// <summary>
     /// An existing read guard (FS-05 <c>resource_limit</c>) is an expected operational
     /// refusal, not an internal defect: nothing was written, and repeating the same

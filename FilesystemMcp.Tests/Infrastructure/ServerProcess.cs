@@ -6,9 +6,22 @@ namespace FilesystemMcp.Tests.Infrastructure;
 
 internal sealed class ServerProcess : IAsyncDisposable
 {
+    /// <summary>Watchdog for a response that never arrives; never a synchronization device.</summary>
+    /// <summary>
+    /// How long a test waits for one frame before declaring the server hung. It is a hang
+    /// detector, not a performance budget: the whole suite runs its subprocess tests in
+    /// parallel, and at full parallelism this machine has repeatedly taken longer than five
+    /// seconds to complete the handshake, which produced failures that said more about load
+    /// than about the server. Fifteen seconds keeps the detector meaningful (a real hang is
+    /// still caught well inside a test run) without turning scheduler pressure into a red
+    /// gate. Any test that needs a tighter or looser bound passes its own watchdog.
+    /// </summary>
+    public static readonly TimeSpan DefaultResponseWatchdog = TimeSpan.FromSeconds(15);
+
     private readonly Process _process;
     private readonly Task _stderrPump;
     private readonly StringBuilder _stderr = new();
+    private readonly List<string> _received = [];
     private int _id;
     private int _exitCode;
     private bool _killedByWatchdog;
@@ -22,6 +35,32 @@ internal sealed class ServerProcess : IAsyncDisposable
 
     /// <summary>True when <see cref="DisposeAsync"/> killed the process for overrunning the exit budget.</summary>
     public bool KilledByWatchdog => _killedByWatchdog;
+
+    /// <summary>
+    /// Raw stdout frames in arrival order. Response ordering is evidence for the
+    /// responsiveness contract (a ping that overtakes a parked tool), and a test can
+    /// only assert it on the frames it actually observed.
+    /// </summary>
+    public IReadOnlyList<string> ReceivedFrames
+    {
+        get { lock (_received) return _received.ToArray(); }
+    }
+
+    /// <summary>Number of frames observed so far, for <see cref="FramesSince"/>.</summary>
+    public int ReceivedFrameCount
+    {
+        get { lock (_received) return _received.Count; }
+    }
+
+    /// <summary>
+    /// Frames that arrived after the given position. The handshake frame is part of
+    /// <see cref="ReceivedFrames"/>, so a test that asserts on one scenario marks the
+    /// position it started from instead of assuming an empty list.
+    /// </summary>
+    public IReadOnlyList<string> FramesSince(int position)
+    {
+        lock (_received) return _received.Skip(position).ToArray();
+    }
 
     private ServerProcess(Process process)
     {
@@ -96,30 +135,66 @@ internal sealed class ServerProcess : IAsyncDisposable
     public async Task<JsonElement> CallAsync(string method, object parameters) =>
         await ReadResponseAsync(await SendCallAsync(method, parameters));
 
-    public async Task<JsonElement> ReadResponseAsync(int id)
+    public async Task<JsonElement> ReadResponseAsync(int id, TimeSpan? watchdog = null)
     {
-        var response = await ReadAsync();
-        Assert.Equal(id, response.GetProperty("id").GetInt32());
+        var line = await ReadRawLineAsync(watchdog);
+        var response = JsonDocumentParse(line);
+        Assert.True(response.TryGetProperty("id", out var actual) && actual.ValueKind == JsonValueKind.Number
+            && actual.GetInt32() == id, $"Expected the response for id {id}, received another frame: {line}");
         return response;
     }
     public Task NotifyAsync(string method, object parameters) => SendRawAsync(
         JsonSerializer.Serialize(new { jsonrpc = "2.0", method, @params = parameters }));
-    public async Task SendRawAsync(string frame)
+
+    /// <summary>Writes an arbitrary raw frame. Historical name, kept for existing callers.</summary>
+    public Task SendRawAsync(string frame) => SendRawLineAsync(frame);
+
+    /// <summary>
+    /// Writes an arbitrary frame plus the line terminator; no serialization, so a test
+    /// can control the exact frame length (oversized and boundary frames).
+    /// </summary>
+    public async Task SendRawLineAsync(string frame)
     {
         await _process.StandardInput.WriteLineAsync(frame);
         await _process.StandardInput.FlushAsync();
     }
-    public async Task<JsonElement> ReadAsync()
+
+    /// <summary>
+    /// Byte-level variant of <see cref="SendRawLineAsync"/>. It exists so a test can put a
+    /// frame on the wire that is not valid text at all (invalid UTF-8), which the
+    /// encoder of the standard-input writer could never produce. The text writer is
+    /// flushed first, so no buffered text can overtake these bytes.
+    /// </summary>
+    public async Task SendRawBytesAsync(byte[] frame)
     {
+        await _process.StandardInput.FlushAsync();
+        await _process.StandardInput.BaseStream.WriteAsync(frame);
+        await _process.StandardInput.BaseStream.FlushAsync();
+    }
+
+    /// <summary>
+    /// Reads one raw stdout line. <paramref name="watchdog"/> only fails a hung test;
+    /// it is never used to synchronize two operations, and the default keeps the
+    /// historical 5 second deadline for every existing caller.
+    /// </summary>
+    public async Task<string> ReadRawLineAsync(TimeSpan? watchdog = null)
+    {
+        var budget = watchdog ?? DefaultResponseWatchdog;
         string? line;
-        try { line = await _process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+        try { line = await _process.StandardOutput.ReadLineAsync().WaitAsync(budget); }
         catch (TimeoutException)
         {
-            throw new Xunit.Sdk.XunitException("Server did not return a response within the watchdog deadline. stderr: " + Stderr);
+            throw new Xunit.Sdk.XunitException(
+                $"Server did not return a response within {budget.TotalSeconds:0.###}s. stderr: " + Stderr);
         }
+
         Assert.True(line is not null, "Server exited before response: " + Stderr);
-        return JsonDocumentParse(line!);
+        lock (_received) _received.Add(line!);
+        return line!;
     }
+
+    public async Task<JsonElement> ReadAsync(TimeSpan? watchdog = null) =>
+        JsonDocumentParse(await ReadRawLineAsync(watchdog));
 
     private async Task DrainStderrAsync()
     {

@@ -73,6 +73,19 @@ internal static class AtomicFileWriter
         var metadata = existed ? ReadMetadata(parent, leaf) : null;
         var document = original is null ? null : TextDocument.Decode(original);
         var prepared = prepare(document);
+
+        // FS-07 R2: the byte budget applies to the RESULT of a write, and the refusal has to
+        // happen before the commit point — not after it. A post-commit refusal would report a
+        // failure for a file that is already replaced, which is exactly the ambiguity FS-02's
+        // commit boundary exists to prevent. The check sits here, before any temp file is
+        // created, so a refused write leaves the workspace untouched.
+        if (prepared.Bytes.Length > policy.Budget.MaxFileBytes)
+        {
+            throw new OperationalException(
+                ToolErrorCodes.ResourceLimit,
+                ToolErrorMessages.ForCode(ToolErrorCodes.ResourceLimit) + " (result is larger than maxFileBytes)");
+        }
+
         var hashes = FileTextHelper.ComputeContentHashes(prepared.Text);
         var result = new AtomicWriteResult(expected, prepared.Text, hashes.Md5, hashes.Sha256);
         token.ThrowIfCancellationRequested();

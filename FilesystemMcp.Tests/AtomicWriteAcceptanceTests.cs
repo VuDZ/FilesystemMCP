@@ -107,7 +107,7 @@ public sealed class AtomicWriteAcceptanceTests
         using var sandbox = new Sandbox();
         var registry = new ToolRegistry { CompletionLog = (_, _, _, _) => throw new IOException("log sink full") };
         registry.Register(new CreateFileTool(sandbox.Workspace));
-        var result = await registry.ExecuteToolAsync("create_file", ServerProcess.Arguments(new { path = "file.txt", content = "created\r\n" }));
+        var result = await registry.ExecuteToolAsync("create_file", ServerProcess.Arguments(new { path = "file.txt", content = "created\r\n" }), limiter: null);
         Assert.Equal("success", ServerProcess.JsonDocumentParse(result).GetProperty("status").GetString());
         Assert.Equal(FileTextHelper.ComputeContentHashes("created\n").Sha256, ServerProcess.JsonDocumentParse(result).GetProperty("sha256").GetString());
         Assert.Equal("created\r\n", File.ReadAllText(Path.Combine(sandbox.Workspace, "file.txt")));
@@ -164,7 +164,7 @@ public sealed class AtomicWriteAcceptanceTests
         var reread = await files.ReadFileAsync("file.txt", new());
         Assert.Equal(FileTextHelper.ComputeContentHashes("new\ntext").Sha256, changed.NewHash);
         Assert.Equal(changed.NewHash, reread.Sha256);
-        var result = await new CreateFileTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { path = "tool.txt", content = "\ufefftool\r\n" }));
+        var result = await new CreateFileTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { path = "tool.txt", content = "\ufefftool\r\n" }), default);
         Assert.Equal((await files.ReadFileAsync("tool.txt", new())).Sha256, ServerProcess.JsonDocumentParse(result).GetProperty("sha256").GetString());
     }
 
