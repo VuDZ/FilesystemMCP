@@ -349,9 +349,11 @@ public sealed class ToolErrorsTests
     {
         using var sandbox = new Sandbox();
         var executable = sandbox.CopyServer("correlation-server", protectedHost: true);
+        // FS-06: the default is a per-user directory, so the test names the log directory
+        // explicitly instead of relying on a folder next to the binary.
         var logPath = Path.Combine(Path.GetDirectoryName(executable)!, "logs");
         sandbox.Write("file.txt", "content");
-        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, executable: executable);
+        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, ["--logDirectory=" + logPath], executable);
         // list_directory on a file fails with ERROR_DIRECTORY, which the classifier
         // deliberately leaves unrecognized (FS-04 pins that). This is the foreseeable
         // client-mistake route into the -32603 bucket; InjectedFaultIsCorrelated below
@@ -366,11 +368,50 @@ public sealed class ToolErrorsTests
         McpAssert.NoSensitiveContent(reply, sandbox.Root, "ERROR_DIRECTORY", "DirectoryNotFoundException");
 
         // The full exception is written to the best-effort log under the same correlation id.
-        var log = string.Join("\n", Directory.EnumerateFiles(logPath).Select(File.ReadAllText));
+        // The writer still holds the file open, so the reader must share it.
+        var log = await WaitForLogAsync(logPath, correlationId!);
         Assert.Contains(correlationId!, log, StringComparison.Ordinal);
         Assert.Contains("System.IO", log, StringComparison.Ordinal);
         Assert.Contains("   at ", log, StringComparison.Ordinal);
         Assert.True((await server.CallAsync("ping", new { })).TryGetProperty("result", out _));
+    }
+
+    private static async Task<string> WaitForLogAsync(string directory, string expected)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        var log = string.Empty;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            log = ReadLogDirectory(directory);
+            if (log.Contains(expected, StringComparison.Ordinal))
+            {
+                return log;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.Fail($"Timed out waiting for '{expected}' in '{directory}'. Observed: {log}");
+        return log;
+    }
+
+    /// <summary>Reads a live log file with the sharing the sink grants its readers.</summary>
+    private static string ReadLogDirectory(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var path in Directory.EnumerateFiles(directory))
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            builder.Append(reader.ReadToEnd()).Append('\n');
+        }
+
+        return builder.ToString();
     }
 
     [Fact, Trait("Status", "Baseline")]
@@ -427,10 +468,11 @@ public sealed class ToolErrorsTests
         using var sandbox = new Sandbox();
         var executable = sandbox.CopyServer("blocked-logger-server", protectedHost: true);
         var logPath = Path.Combine(Path.GetDirectoryName(executable)!, "logs");
-        // A file occupying the log directory name makes every logger stage fail.
+        // The configured log directory name is occupied by a file. The default sink is
+        // the user directory, so the server must be pointed at this path explicitly.
         await File.WriteAllTextAsync(logPath, "fixture occupying directory name");
         sandbox.Write("file.txt", "content");
-        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, executable: executable);
+        await using var server = await ServerProcess.StartAsync(sandbox.Workspace, ["--logDirectory=" + logPath], executable);
 
         var reply = await server.ToolAsync("list_directory", new { path = "file.txt" });
         McpAssert.ProtocolError(reply, -32603);
@@ -445,6 +487,7 @@ public sealed class ToolErrorsTests
         McpAssert.Success(create);
         Assert.Equal("valuable", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "created.txt")));
         Assert.True(File.Exists(logPath), "The occupied log path must stay untouched.");
+        Assert.Equal("fixture occupying directory name", await File.ReadAllTextAsync(logPath));
     }
 
     [Fact, Trait("Status", "Baseline")]

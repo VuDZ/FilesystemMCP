@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.5.0
+**Version:** 1.7.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -12,7 +12,7 @@ A lightweight, zero-dependency Model Context Protocol (MCP) server for local fil
 
 Designed for autonomous LLM agent interactions via JSON-RPC 2.0 over `stdio`. It keeps incoming paths within the logical workspace, supports links to internal/external files by default, and uses optimistic locking for replacements. An explicit `--allowSymLinks=false` enables a physical workspace jail without links.
 
-Compatible with Cursor, OpenCode, RooCode, and Claude Desktop. Implements the MCP handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`) and writes diagnostic logs to `logs/mcplog-*.log` next to the executable.
+Compatible with Cursor, OpenCode, RooCode, and Claude Desktop. Implements the MCP handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`) and writes best-effort diagnostic logs to `mcplog-<date>-pid<pid>.log` in a per-user directory (not next to the executable); `--logDirectory=<path>` overrides it.
 
 ### Build & Installation
 
@@ -60,7 +60,19 @@ Writes recheck policy before committing and use directory/leaf handles: Windows 
 
 Writes are serialized across cooperating local server processes by canonical physical path and file identity. Before commit, changes to bytes, identity or observed metadata return `hash_conflict` without mutation. This fresh check is not an OS compare-and-swap: a noncooperating external writer can still race the check and rename. Replacement preserves encoding/BOM, untouched line endings, ACL/access metadata and attributes; read-only files are rejected. Create retains supplied line endings and returns `status`, `md5`, and `sha256` for the complete normalized stored document (BOM excluded). After commit, late cancellation, logger or cleanup failures keep the successful result; mutations are never automatically retried. Temp data receives `Flush(true)` before publication, but directory/power-loss durability is not guaranteed. See [FS-02 guarantees and limitations](docs/02-atomic-writes.md).
 
-Mutation tool failures use `result.isError=true` with JSON `code`/`message`: `hash_conflict`, `file_exists`, `access_denied`, `unsupported_encoding`, `binary_file`, `target_not_found`, and `file_not_found`. `hash_conflict` requires a fresh read before another patch. These were the FS-02 prerequisites; the complete FS-05 error table (including `directory_not_found`, `file_locked`, `path_outside_workspace`, `symlink_not_allowed`, `resource_limit`, `cancelled` and the `details`/`retryable` object) is implemented in version 1.6.0, while FS-06 logging configuration/rotation remains planned.
+Mutation tool failures use `result.isError=true` with JSON `code`/`message`: `hash_conflict`, `file_exists`, `access_denied`, `unsupported_encoding`, `binary_file`, `target_not_found`, and `file_not_found`. `hash_conflict` requires a fresh read before another patch. These were the FS-02 prerequisites; the complete FS-05 error table (including `directory_not_found`, `file_locked`, `path_outside_workspace`, `symlink_not_allowed`, `resource_limit`, `cancelled` and the `details`/`retryable` object) is implemented in version 1.6.0, and FS-06 logging configuration, redaction, queue and rotation are implemented in version 1.7.0.
+
+### Diagnostics and logging
+
+`FilesystemMCP.exe <workspace> [--allowSymLinks=true|false] [--logDirectory=<path>]`.
+
+Logging is best effort by contract (FS-06, version 1.7.0): no stage — path selection, directory creation, formatting, queueing, file write or stderr fallback — can throw into a tool or the transport, and a logging failure after commit never changes a successful mutation into a failure. stdout carries protocol frames only.
+
+- Default directory is per-user, not the binary directory: `%LOCALAPPDATA%\FilesystemMCP\logs` on Windows, `$XDG_STATE_HOME/FilesystemMCP/logs` (or `~/.local/state/FilesystemMCP/logs`) on Unix, with a temp-directory fallback.
+- `--logDirectory=<path>` overrides it. A missing value or a duplicate option fails startup in stderr with a nonzero exit code; an *unavailable* directory (name occupied by a file, denied ACL, I/O error) does not: the file sink is disabled, one safe message goes to stderr, and the server keeps serving requests.
+- Rotation: 10 MiB per file, at most five files per session, named `mcplog-<yyyyMMdd>-pid<pid>.log` plus `.1`…`.4`. Startup and cleanup touch only this session's names and never delete foreign logs.
+- File contents are never logged, not even partially: `content`, `text`, `target_snippet`, `replacement_snippet`, `snippet`, `body`, `data`, `message`, `old_string`, `new_string`, `old_text`, `new_text`, `pattern` and `regex` become `<redacted N chars>`. Diagnostics carry the operation, the safe relative path, lengths, hash/code, a UTC timestamp (same format for INFO and ERROR) and the FS-05 request correlation id. Exception entries carry the type, HResult and stack trace, never the platform message.
+- A single bounded queue with one background writer keeps logging off the request path: overflow drops diagnostic records (with a single aggregate counter notice) instead of blocking the transport, and process exit flushes the queue under a bounded deadline.
 
 ### Agent & OpenCode Templates
 
@@ -167,13 +179,13 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.5.0
+**Версия:** 1.7.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
 Разработан для автономной работы LLM-агентов. Входные пути ограничены логическим workspace; ссылки на внутренние и внешние файлы включены по умолчанию. `--allowSymLinks=false` включает физический jail без ссылок. Замены используют оптимистичную блокировку. [Контракт ссылок, результатов и ошибок](#workspace-links-and-result-contracts).
 
-Совместим с Cursor, OpenCode, RooCode и Claude Desktop. Реализует MCP-handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`). Диагностические логи пишутся в `logs/mcplog-*.log` рядом с исполняемым файлом.
+Совместим с Cursor, OpenCode, RooCode и Claude Desktop. Реализует MCP-handshake (`initialize`, `tools/list`, `prompts/list`, `resources/list`). Диагностические логи best-effort пишутся в `mcplog-<date>-pid<pid>.log` в пользовательском каталоге (не рядом с исполняемым файлом); `--logDirectory=<path>` переопределяет путь.
 
 ### Сборка и установка
 
@@ -200,6 +212,18 @@ dotnet publish -c Release
 - **Type:** `command`
 - **Command:** `C:\path\to\FilesystemMcp.exe`
 - **Args:** `C:\path\to\your\target\repository`
+
+### Диагностика и логирование
+
+`FilesystemMCP.exe <workspace> [--allowSymLinks=true|false] [--logDirectory=<path>]`.
+
+Логирование по контракту best effort (FS-06, версия 1.7.0): ни одна стадия — выбор пути, создание каталога, форматирование, постановка в очередь, запись в файл или fallback в stderr — не может выбросить исключение в tool или transport, а сбой логирования после commit не превращает успешную mutation в отказ. stdout содержит только protocol frames.
+
+- Каталог по умолчанию — пользовательский, а не каталог бинарника: `%LOCALAPPDATA%\FilesystemMCP\logs` на Windows, `$XDG_STATE_HOME/FilesystemMCP/logs` (или `~/.local/state/FilesystemMCP/logs`) на Unix, с fallback в каталог временных файлов.
+- `--logDirectory=<path>` переопределяет путь. Отсутствующее значение или дубликат опции — отказ запуска в stderr с ненулевым exit code; **недоступный** каталог (имя занято файлом, denied ACL, ошибка ввода-вывода) — нет: file sink отключается, в stderr уходит одно безопасное сообщение, сервер продолжает обслуживать запросы.
+- Ротация: 10 MiB на файл, не более пяти файлов на session, имена `mcplog-<yyyyMMdd>-pid<pid>.log` и `.1`…`.4`. Startup и cleanup работают только со своими именами и никогда не удаляют чужие logs.
+- Содержимое файлов не логируется даже частично: `content`, `text`, `target_snippet`, `replacement_snippet`, `snippet`, `body`, `data`, `message`, `old_string`, `new_string`, `old_text`, `new_text`, `pattern` и `regex` заменяются на `<redacted N chars>`. В диагностике остаются операция, безопасный relative path, длины, hash/code, UTC-метка (одинаковый формат для INFO и ERROR) и request correlation id из FS-05. Запись об исключении содержит тип, HResult и стек-трейс, но не платформенный текст сообщения.
+- Единая bounded queue и один фоновый writer держат логирование вне пути запроса: переполнение отбрасывает диагностические записи (с одним агрегированным уведомлением-счётчиком), а не блокирует transport; exit flush ограничен по времени.
 
 ### Шаблоны для агента и OpenCode
 
@@ -308,4 +332,4 @@ dotnet publish -c Release
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован только в объёме atomic-write prerequisites. Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован в версии 1.7.0 и принят независимым ревью (в первом раунде подняты замечания, они исправлены и подтверждены во втором раунде): отказоустойчивый logger (best-effort все стадии, пользовательский каталог и `--logDirectory`, bounded queue с одним writer-ом, ротация 10 MiB × 5, запрет content в логах, UTC + correlation, bounded exit flush); полный текст — в [06-fail-safe-logging.md](docs/06-fail-safe-logging.md). Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

@@ -31,6 +31,10 @@ internal static class Program
             var (workspace, options) = ServerOptions.Parse(args);
             policy = new PathPolicy(workspace, options);
             if (AtomicWritesForHost is not null) policy.AtomicWrites = AtomicWritesForHost;
+            // FS-06: diagnostics are best effort from the first record on. A logging
+            // failure here can never fail startup, and an unavailable directory only
+            // disables the file sink.
+            try { McpLogger.Start(options.LogDirectory); } catch { }
         }
         catch (Exception ex)
         {
@@ -46,6 +50,8 @@ internal static class Program
         toolRegistry.Register(new ReadFileTool(fileService));
         toolRegistry.Register(new ReplaceInFileTool(fileService));
 
+        try
+        {
         while (true)
         {
             var line = await Console.In.ReadLineAsync();
@@ -84,7 +90,9 @@ internal static class Program
                 // An unexpected defect: the client gets a neutral message and a correlation
                 // id, the full exception goes to the best-effort log and never to the wire.
                 var correlationId = ToolErrorMapper.NewCorrelationId();
-                try { McpLogger.LogError($"Unhandled request failure (correlationId={correlationId})", ex); } catch { }
+                // The logger is best effort by contract; the extra guard keeps the response
+                // path independent even of a defect inside the logger itself.
+                try { McpLogger.Error("Unhandled request failure.", ex, correlationId); } catch { }
                 var isParseError = ex is JsonException;
                 response = CreateErrorResponse(
                     id: request?.Id,
@@ -101,6 +109,13 @@ internal static class Program
             var json = JsonSerializer.Serialize(response, McpJsonContext.Default.JsonRpcResponse);
             await Console.Out.WriteLineAsync(json);
             await Console.Out.FlushAsync();
+        }
+        }
+        finally
+        {
+            // FS-06: bounded exit flush. Diagnostics are not allowed to delay shutdown,
+            // and whatever is already queued is written before the process leaves.
+            try { McpLogger.Shutdown(TimeSpan.FromSeconds(2)); } catch { }
         }
     }
 
@@ -258,7 +273,7 @@ internal static class Program
     /// </summary>
     private static JsonRpcResponse CreateInvalidParamsResponse(JsonElement? id, Exception exception)
     {
-        try { McpLogger.LogInfo("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception)); } catch { }
+        try { McpLogger.Info("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception)); } catch { }
         return CreateErrorResponse(id, InvalidParamsCode, "Invalid arguments.");
     }
 

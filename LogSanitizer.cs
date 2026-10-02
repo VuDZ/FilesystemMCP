@@ -7,7 +7,15 @@ internal static class LogSanitizer
 {
     internal const int DefaultMaxLength = 200;
     private const int ContentMaxLength = 80;
+    private const int MaxPropertyNameLength = 60;
+    private const int MaxOutputLength = 2000;
 
+    /// <summary>
+    /// Property names whose values are never logged, not even partially: a log line is a
+    /// diagnostic, and truncating content would still be publishing a secret. The value is
+    /// replaced by its length so an operator can still tell "payload was 25 chars".
+    /// Forbidden by contract: content, text, snippets, bodies, data, messages and patterns.
+    /// </summary>
     private static readonly HashSet<string> ContentPropertyNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "content",
@@ -17,13 +25,27 @@ internal static class LogSanitizer
         "snippet",
         "body",
         "data",
-        "message"
+        "message",
+        "old_string",
+        "new_string",
+        "old_text",
+        "new_text",
+        "pattern",
+        "regex"
     };
 
     public static string SanitizeForLog(JsonElement element, int maxDepth = 6)
     {
         var builder = new StringBuilder(256);
         AppendElement(element, builder, depth: 0, maxDepth);
+        if (builder.Length > MaxOutputLength)
+        {
+            var suffix = "…[truncated, " + builder.Length + " chars]";
+            var keep = Math.Max(0, MaxOutputLength - suffix.Length);
+            var text = builder.ToString();
+            return string.Concat(text.AsSpan(0, Math.Min(keep, text.Length)), suffix);
+        }
+
         return builder.ToString();
     }
 
@@ -81,12 +103,17 @@ internal static class LogSanitizer
 
                     first = false;
                     builder.Append('"');
-                    builder.Append(EscapeJsonString(property.Name));
+                    builder.Append(EscapeJsonString(property.Name, MaxPropertyNameLength));
                     builder.Append("\":");
 
                     if (property.Value.ValueKind == JsonValueKind.String)
                     {
-                        AppendTruncatedString(property.Value.GetString() ?? string.Empty, property.Name, builder);
+                        AppendStringValue(property.Value.GetString() ?? string.Empty, property.Name, builder);
+                    }
+                    else if (ContentPropertyNames.Contains(property.Name))
+                    {
+                        // A non-string content carrier (array/object) is replaced as a whole.
+                        AppendRedaction(property.Value, builder);
                     }
                     else
                     {
@@ -115,7 +142,7 @@ internal static class LogSanitizer
                 break;
 
             case JsonValueKind.String:
-                AppendTruncatedString(element.GetString() ?? string.Empty, propertyName: null, builder);
+                AppendStringValue(element.GetString() ?? string.Empty, propertyName: null, builder);
                 break;
 
             case JsonValueKind.Number:
@@ -131,16 +158,19 @@ internal static class LogSanitizer
         }
     }
 
-    private static void AppendTruncatedString(string value, string? propertyName, StringBuilder builder)
+    private static void AppendStringValue(string value, string? propertyName, StringBuilder builder)
     {
-        var maxLength = propertyName is not null && ContentPropertyNames.Contains(propertyName)
-            ? ContentMaxLength
-            : DefaultMaxLength;
+        if (propertyName is not null && ContentPropertyNames.Contains(propertyName))
+        {
+            builder.Append("\"<redacted ").Append(value.Length).Append(" chars>\"");
+            return;
+        }
 
+        var maxLength = DefaultMaxLength;
         builder.Append('"');
         if (value.Length <= maxLength)
         {
-            builder.Append(EscapeJsonString(value));
+            builder.Append(EscapeJsonString(value.AsSpan()));
         }
         else
         {
@@ -153,14 +183,42 @@ internal static class LogSanitizer
         builder.Append('"');
     }
 
-    private static string EscapeJsonString(string value) =>
-        EscapeJsonString(value.AsSpan());
-
-    private static string EscapeJsonString(ReadOnlySpan<char> value)
+    private static void AppendRedaction(JsonElement element, StringBuilder builder)
     {
-        var builder = new StringBuilder(value.Length);
-        foreach (var ch in value)
+        var count = element.ValueKind switch
         {
+            JsonValueKind.Array => element.GetArrayLength(),
+            JsonValueKind.Object => CountProperties(element),
+            _ => 0
+        };
+
+        builder.Append("\"<redacted ").Append(count).Append(" item(s)>\"");
+    }
+
+    private static int CountProperties(JsonElement element)
+    {
+        var count = 0;
+        foreach (var _ in element.EnumerateObject())
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static string EscapeJsonString(string value) =>
+        EscapeJsonString(value.AsSpan(), value.Length);
+
+    private static string EscapeJsonString(ReadOnlySpan<char> value) =>
+        EscapeJsonString(value, value.Length);
+
+    private static string EscapeJsonString(ReadOnlySpan<char> value, int maxLength)
+    {
+        var limit = Math.Min(value.Length, maxLength);
+        var builder = new StringBuilder(limit);
+        for (var i = 0; i < limit; i++)
+        {
+            var ch = value[i];
             switch (ch)
             {
                 case '\\':

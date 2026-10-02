@@ -10,10 +10,18 @@ internal sealed class ServerProcess : IAsyncDisposable
     private readonly Task _stderrPump;
     private readonly StringBuilder _stderr = new();
     private int _id;
+    private int _exitCode;
+    private bool _killedByWatchdog;
     public static string DefaultExecutable => Environment.GetEnvironmentVariable("FILESYSTEM_MCP_TEST_SERVER")
         ?? ProtectedExecutable;
     public static string ProtectedExecutable => Path.Combine(AppContext.BaseDirectory, "server", "FilesystemMcp.TestHost.dll");
     public string Stderr { get { lock (_stderr) return _stderr.ToString(); } }
+
+    /// <summary>Exit code captured when the process actually left. Meaningful after dispose.</summary>
+    public int ExitCode => _exitCode;
+
+    /// <summary>True when <see cref="DisposeAsync"/> killed the process for overrunning the exit budget.</summary>
+    public bool KilledByWatchdog => _killedByWatchdog;
 
     private ServerProcess(Process process)
     {
@@ -130,11 +138,30 @@ internal sealed class ServerProcess : IAsyncDisposable
             {
                 _process.StandardInput.Close();
                 try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)); }
-                catch (TimeoutException) { _process.Kill(entireProcessTree: true); }
+                catch (TimeoutException)
+                {
+                    _killedByWatchdog = true;
+                    _process.Kill(entireProcessTree: true);
+                }
             }
             await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             await _stderrPump.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        finally { _process.Dispose(); }
+        finally
+        {
+            try
+            {
+                if (_process.HasExited)
+                {
+                    _exitCode = _process.ExitCode;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // The process never produced an exit code.
+            }
+
+            _process.Dispose();
+        }
     }
 }

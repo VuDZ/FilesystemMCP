@@ -145,13 +145,14 @@ internal static class ToolErrorMapper
     internal static string NewCorrelationId() => Guid.NewGuid().ToString("N");
 
     /// <summary>
-    /// Bounded, single-line argument-failure text for diagnostics **only**. The
-    /// client-visible <c>-32602</c> message is a fixed product string: .NET argument
-    /// messages are platform text this server does not own, so they are logged
-    /// (sanitized and capped) instead of being echoed to a client.
+    /// Bounded argument-failure detail for diagnostics **only**. The client-visible
+    /// <c>-32602</c> message is a fixed product string, and even the log gets no platform
+    /// message: .NET argument text is not owned by this server and can embed client
+    /// content (for example the regular expression behind a failed pattern compile), so
+    /// only the exception type, HResult and stack trace are reported.
     /// </summary>
     internal static string ArgumentFailureDetail(Exception exception) =>
-        LogSanitizer.SanitizeText(exception.Message, MaxMessageLength);
+        Logging.DescribeException(exception);
 
     /// <summary>
     /// Echoes the requested path only when it is relative and bounded: an absolute

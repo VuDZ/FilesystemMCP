@@ -39,4 +39,36 @@ internal static class ProcessRunner
             }
         }
     }
+
+    /// <summary>
+    /// Runs an entry point whose stdin is already at EOF, so a stdio server performs its
+    /// normal shutdown instead of waiting for input. Startup failures and the exit path can
+    /// therefore be observed together with the exact stdout/stderr they produced.
+    /// </summary>
+    internal static async Task<ProcessResult> RunWithClosedInputAsync(string executable, IEnumerable<string> arguments)
+    {
+        var info = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        using var process = Process.Start(info) ?? throw new InvalidOperationException("Cannot start fixture process.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        try
+        {
+            process.StandardInput.Close();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+            return new(process.ExitCode, await stdout, await stderr);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+    }
 }

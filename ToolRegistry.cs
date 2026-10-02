@@ -8,7 +8,7 @@ internal sealed class ToolRegistry
     private JsonElement _cachedToolsList;
     private bool _isToolsListCached;
     internal Action<string, TimeSpan, bool, string?> CompletionLog { get; set; } =
-        (name, elapsed, success, detail) => McpLogger.LogToolComplete(name, elapsed, success, detail);
+        (name, elapsed, success, detail) => McpLogger.ToolComplete(name, elapsed, success, detail);
 
     public void Register(IMcpTool tool)
     {
@@ -52,7 +52,7 @@ internal sealed class ToolRegistry
             throw new UnknownToolException(name);
         }
 
-        try { McpLogger.LogToolInvoke(name, arguments); } catch { }
+        try { McpLogger.ToolInvoke(name, arguments); } catch { }
         var startedAt = Environment.TickCount64;
 
         try
