@@ -16,7 +16,7 @@ internal sealed class ReplaceInFileTool : IMcpTool
     "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." },
     "target_snippet": { "type": "string", "minLength": 1 },
     "replacement_snippet": { "type": "string" },
-    "original_hash": { "type": "string", "minLength": 1 }
+    "original_hash": { "type": "string", "minLength": 1, "pattern": "\\S" }
   }
 }
 """;
@@ -43,11 +43,22 @@ internal sealed class ReplaceInFileTool : IMcpTool
         }
 
         var path = ToolArguments.GetRequiredPath(arguments);
-        var targetSnippet = GetRequiredString(arguments, "target_snippet");
-        var replacementSnippet = GetRequiredString(arguments, "replacement_snippet");
-        var originalHash = GetRequiredString(arguments, "original_hash");
+        // FS-11 (1.11.0): the three text arguments have three different empty rules.
+        // replacement_snippet accepts "" and any whitespace (deletion); target_snippet is
+        // non-empty by Length, so a whitespace-only target is a legal exact match;
+        // original_hash is non-whitespace, since whitespace is not a hash — and no argument
+        // is trimmed. The schema mirrors exactly this for these three arguments:
+        // replacement_snippet and target_snippet are plain "type":"string" (+ minLength 1
+        // for the target), while original_hash additionally carries pattern "\S". The
+        // asymmetry is deliberate: a whitespace-only target matches literally, a
+        // whitespace-only hash can never match any digest. path keeps the general
+        // ToolArguments contract, and additionalProperties is declared but not enforced at
+        // runtime (inherited FS-05 behaviour).
+        var targetSnippet = GetRequiredString(arguments, "target_snippet", RequiredText.NonEmpty);
+        var replacementSnippet = GetRequiredString(arguments, "replacement_snippet", RequiredText.Any);
+        var originalHash = GetRequiredString(arguments, "original_hash", RequiredText.NonWhitespace);
 
-        var (newText, newHash) = await _fileService.ReplaceInFileAsync(
+        var (newText, newHash, replaceIndex) = await _fileService.ReplaceInFileAsync(
             path,
             targetSnippet,
             replacementSnippet,
@@ -57,22 +68,30 @@ internal sealed class ReplaceInFileTool : IMcpTool
         var result = new ReplaceInFileToolResult(
             Status: "success",
             NewHash: newHash,
-            Snippet: BuildSnippet(newText, replacementSnippet));
+            Snippet: BuildSnippet(newText, replaceIndex));
 
         return JsonSerializer.Serialize(result, McpJsonContext.Default.ReplaceInFileToolResult);
     }
 
-    private static string GetRequiredString(JsonElement arguments, string propertyName)
+    private enum RequiredText { Any, NonEmpty, NonWhitespace }
+
+    private static string GetRequiredString(JsonElement arguments, string propertyName, RequiredText rule)
     {
+        // Missing, JSON null and a wrong type are the same failure: no implicit default.
         if (!arguments.TryGetProperty(propertyName, out var node)
-            || node.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
             || node.ValueKind != JsonValueKind.String)
         {
             throw new ArgumentException($"Missing required argument: {propertyName}.");
         }
 
-        var value = node.GetString();
-        if (string.IsNullOrWhiteSpace(value))
+        var value = node.GetString()!;
+        var invalid = rule switch
+        {
+            RequiredText.NonEmpty => value.Length == 0,
+            RequiredText.NonWhitespace => string.IsNullOrWhiteSpace(value),
+            _ => false
+        };
+        if (invalid)
         {
             throw new ArgumentException($"Argument {propertyName} cannot be empty.");
         }
@@ -80,23 +99,20 @@ internal sealed class ReplaceInFileTool : IMcpTool
         return value;
     }
 
-    private static string BuildSnippet(string text, string replacementSnippet)
+    // The window is anchored on the offset the edit actually happened at, in the LF-normalized
+    // result. Searching the result for the replacement text — the pre-1.11.0 behaviour — has no
+    // position at all for a deletion ("" matches at index 0) and picks the wrong window when the
+    // replacement text already occurred earlier in the file.
+    private static string BuildSnippet(string text, int replaceIndex)
     {
         if (text.Length <= MaxSnippetLength)
         {
             return text;
         }
 
-        var searchToken = replacementSnippet.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-        var sourceText = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-        var index = sourceText.IndexOf(searchToken, StringComparison.Ordinal);
-        if (index < 0)
-        {
-            return sourceText[..MaxSnippetLength];
-        }
-
-        var start = Math.Max(0, index - (MaxSnippetLength / 2));
-        var length = Math.Min(MaxSnippetLength, sourceText.Length - start);
-        return sourceText.Substring(start, length);
+        var anchor = Math.Clamp(replaceIndex, 0, text.Length);
+        var start = Math.Max(0, anchor - (MaxSnippetLength / 2));
+        var length = Math.Min(MaxSnippetLength, text.Length - start);
+        return text.Substring(start, length);
     }
 }

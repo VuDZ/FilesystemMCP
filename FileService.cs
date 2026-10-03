@@ -117,7 +117,9 @@ internal sealed class FileService
         return options.MaxLines.Value;
     }
 
-    public async Task<(string NewText, string NewHash)> ReplaceInFileAsync(
+    // FS-11 (1.11.0): ReplaceIndex is the canonical (LF-normalized) offset of the first exact
+    // match that was replaced. It lets the tool anchor its response snippet on the edit itself.
+    public async Task<(string NewText, string NewHash, int ReplaceIndex)> ReplaceInFileAsync(
         string path,
         string targetSnippet,
         string replacementSnippet,
@@ -142,7 +144,8 @@ internal sealed class FileService
         try
         {
             var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
-            return (result.Text, result.Sha256);
+            // Only a replace reports an edit position; a whole-text write has none.
+            return (result.Text, result.Sha256, result.ReplaceIndex!.Value);
         }
         catch (Exception ex)
         {

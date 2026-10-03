@@ -473,7 +473,7 @@ public sealed class AtomicWriteAcceptanceTests
 
     private static PathPolicy Policy(Sandbox sandbox, Action<AtomicWritePoint> hook) => new(sandbox.Workspace)
     { AtomicWrites = new AtomicWriteDependencies { Hook = hook } };
-    private static Task<(string NewText, string NewHash)> Replace(PathPolicy policy, string next, CancellationToken token = default) =>
+    private static Task<(string NewText, string NewHash, int ReplaceIndex)> Replace(PathPolicy policy, string next, CancellationToken token = default) =>
         new FileService(policy).ReplaceInFileAsync("file.txt", "old", next, FileTextHelper.ComputeContentHashes("old\ntext").Sha256, token);
     private static string[] Temps(Sandbox sandbox) => Directory.GetFiles(sandbox.Workspace, ".filesystemmcp-*.tmp");
 

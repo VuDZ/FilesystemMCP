@@ -94,7 +94,11 @@ internal sealed class TextDocument
         catch (MutationException ex) when (ex.Code == "unsupported_encoding") { return new(TextClass.UnsupportedEncoding, null); }
     }
 
-    internal (string Canonical, byte[] Bytes) Replace(string target, string replacement)
+    // FS-11 (1.11.0): the canonical offset of the first exact match travels back with the
+    // result. It is the only reliable anchor for the response snippet: searching the result
+    // for the replacement text is wrong for an empty replacement and ambiguous when the
+    // replacement text already occurred earlier in the file.
+    internal (string Canonical, byte[] Bytes, int Index) Replace(string target, string replacement)
     {
         target = FileTextHelper.NormalizeLineEndings(target);
         replacement = FileTextHelper.NormalizeLineEndings(replacement);
@@ -106,7 +110,7 @@ internal sealed class TextDocument
         var encoded = _encoding.GetBytes(stored); // Encoder completion precedes any temp creation.
         var result = new byte[_bom.Length + encoded.Length];
         _bom.CopyTo(result, 0); encoded.CopyTo(result, _bom.Length);
-        return (Decode(result).Canonical, result);
+        return (Decode(result).Canonical, result, index);
     }
 
     private static TextDocument DecodePayload(Encoding encoding, byte[] bom, ReadOnlySpan<byte> payload)

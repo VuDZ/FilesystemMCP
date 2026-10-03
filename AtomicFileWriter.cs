@@ -14,7 +14,9 @@ internal sealed class AtomicWriteDependencies
     internal void Invoke(AtomicWritePoint point) => Hook?.Invoke(point);
 }
 
-internal sealed record AtomicWriteResult(string Path, string Text, string Md5, string Sha256);
+// ReplaceIndex is the canonical offset of the first match the replace path edited; it is
+// null for whole-text writes, which have no edit position (FS-11).
+internal sealed record AtomicWriteResult(string Path, string Text, string Md5, string Sha256, int? ReplaceIndex);
 
 internal static class AtomicFileWriter
 {
@@ -25,7 +27,7 @@ internal static class AtomicFileWriter
             if (document is null) throw new MutationException("file_not_found", "File not found.");
             FileTextHelper.EnsureHashMatches(originalHash, document.Canonical);
             var changed = document.Replace(target, replacement);
-            return (changed.Canonical, changed.Bytes);
+            return (changed.Canonical, changed.Bytes, (int?)changed.Index);
         }, token);
 
     internal static Task<AtomicWriteResult> WriteTextAsync(PathPolicy policy, string requested, string text,
@@ -35,11 +37,11 @@ internal static class AtomicFileWriter
             var bytes = new UTF8Encoding(false, true).GetBytes(text);
             // A supplied leading U+FEFF becomes a physical UTF-8 BOM. Hash the
             // document subsequent reads will decode, excluding that signature.
-            return (TextDocument.Decode(bytes).Canonical, bytes);
+            return (TextDocument.Decode(bytes).Canonical, bytes, (int?)null);
         }, token);
 
     private static Task<AtomicWriteResult> RunAsync(PathPolicy policy, string requested, bool create,
-        Func<TextDocument?, (string Text, byte[] Bytes)> prepare, CancellationToken token)
+        Func<TextDocument?, (string Text, byte[] Bytes, int? ReplaceIndex)> prepare, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         // Mutex ownership is thread-affine. Keep the entire synchronous transaction
@@ -48,7 +50,7 @@ internal static class AtomicFileWriter
     }
 
     private static AtomicWriteResult Run(PathPolicy policy, string requested, bool create,
-        Func<TextDocument?, (string Text, byte[] Bytes)> prepare, CancellationToken token)
+        Func<TextDocument?, (string Text, byte[] Bytes, int? ReplaceIndex)> prepare, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var expected = policy.Resolve(requested);
@@ -87,7 +89,7 @@ internal static class AtomicFileWriter
         }
 
         var hashes = FileTextHelper.ComputeContentHashes(prepared.Text);
-        var result = new AtomicWriteResult(expected, prepared.Text, hashes.Md5, hashes.Sha256);
+        var result = new AtomicWriteResult(expected, prepared.Text, hashes.Md5, hashes.Sha256, prepared.ReplaceIndex);
         token.ThrowIfCancellationRequested();
         var tempName = ".filesystemmcp-" + Guid.NewGuid().ToString("N") + ".tmp";
         using var temp = parent.OpenLeaf(tempName, true);
