@@ -7,8 +7,9 @@ internal enum TextClass { Text, Binary, UnsupportedEncoding }
 internal readonly record struct TextClassResult(TextClass Class, TextDocument? Document);
 
 // Minimal FS-03 representation: strict decoding plus a normalized-offset map.
-// FS-09 should call Classify/ClassifyAsync/ParseAsync. SearchTool match/skip stays on its
-// current NUL probe and permissive UTF-8 reader until that epoch.
+// FS-09 (1.10.0) shares this decode policy through FileContentReader's streaming
+// scanner (SearchLinesAsync over the same ScanOnceAsync read_file uses), not through
+// this whole-payload parser, which stays on the read/patch path that needs the map.
 internal sealed class TextDocument
 {
     private const int ParseChunkBytes = 4096;

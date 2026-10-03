@@ -141,6 +141,47 @@ internal static class FileContentReader
     }
 
     /// <summary>
+    /// FS-09: the search tool's line stream. It is the very scanner the read path uses —
+    /// the same byte budget, the same BOM precedence, the same strict decode and the same
+    /// deferred binary verdict — minus the read-only concerns: no sharing retry (search
+    /// reports a locked file as an immediate per-file skip, not as a backoff that would
+    /// spend the client's deadline) and no content digests. Every decoded line is handed
+    /// to <paramref name="emit"/> with its 1-based number, so a search never materializes
+    /// more than one line regardless of the file size. The whole file is always scanned:
+    /// the binary and encoding verdicts are only final at end-of-stream, so a NUL or an
+    /// invalid sequence after any number of matches still reclassifies the file.
+    /// </summary>
+    /// <param name="afterHeadProbe">
+    /// Deterministic test seam, invoked after the signature probe and before the decode
+    /// while the single read stream is still open; null in production.
+    /// </param>
+    /// <param name="openStream">
+    /// Deterministic test seam: reads through this factory instead of opening the path.
+    /// Null in production.
+    /// </param>
+    internal static Task SearchLinesAsync(
+        string resolvedPath,
+        ResourceBudget budget,
+        Action<int, string> emit,
+        Action? afterHeadProbe,
+        Func<string, Stream>? openStream,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resolvedPath);
+        ArgumentNullException.ThrowIfNull(budget);
+        ArgumentNullException.ThrowIfNull(emit);
+
+        return ScanOnceAsync(
+            resolvedPath,
+            budget,
+            () => new SearchLineSink(budget, emit),
+            hashContent: false,
+            openStream,
+            afterHeadProbe,
+            cancellationToken);
+    }
+
+    /// <summary>
     /// One retried scan. The sink is created per attempt, so a retried read never mixes
     /// text from two attempts.
     /// </summary>
@@ -157,7 +198,7 @@ internal static class FileContentReader
         try
         {
             return await SharingRetry.RunAsync(
-                token => ScanOnceAsync(resolvedPath, budget, sinkFactory, hashContent, openStream, token),
+                token => ScanOnceAsync(resolvedPath, budget, sinkFactory, hashContent, openStream, afterHeadProbe: null, token),
                 beforeRetry,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -192,6 +233,7 @@ internal static class FileContentReader
         Func<LineSink> sinkFactory,
         bool hashContent,
         Func<string, Stream>? openStream,
+        Action? afterHeadProbe,
         CancellationToken cancellationToken)
     {
         var sink = sinkFactory();
@@ -222,6 +264,11 @@ internal static class FileContentReader
                 totalBytes += read;
                 EnsureCountedBytesWithinBudget(totalBytes, budget);
             }
+
+            // The probe is done: the signature bytes are in hand and the single stream is
+            // still open. The FS-09 search path hooks its fault-injection seam in here,
+            // between the probe and the decode, exactly where a mid-read delete happens.
+            afterHeadProbe?.Invoke();
 
             var (encoding, bomLength) = Signature(head, headCount);
             processor.Start(encoding, nulIsBinary: bomLength == 0);
@@ -293,17 +340,19 @@ internal static class FileContentReader
         private readonly bool _hashContent;
         private readonly char[] _chars = new char[ChunkBytes];
         // Canonical characters handed to the digest; normalization never grows the text,
-        // so one chunk-sized buffer is enough.
-        private readonly char[] _canonical = new char[ChunkBytes];
+        // so one chunk-sized buffer is enough. Allocated only on the hashing path: FS-09
+        // search scans share this processor without digests, and a traversal of many
+        // files must not pay for buffers it never fills.
+        private readonly char[]? _canonical;
         // UTF-8 needs at most three bytes per UTF-16 code unit, plus four for a surrogate
-        // pair completed from the encoder's pending state.
-        private readonly byte[] _encoded = new byte[(ChunkBytes * 3) + 4];
+        // pair completed from the encoder's pending state. Hashing path only, see above.
+        private readonly byte[]? _encoded;
         private readonly IncrementalHash? _md5;
         private readonly IncrementalHash? _sha256;
         // Replacement fallback, i.e. exactly the bytes Encoding.UTF8.GetBytes(canonical)
         // produces. The canonical text is already strictly decoded, so this only matters
-        // for a text that could not round-trip.
-        private readonly Encoder _encoder = Encoding.UTF8.GetEncoder();
+        // for a text that could not round-trip. Hashing path only, see above.
+        private readonly Encoder? _encoder;
         private Decoder _decoder = Utf8.GetDecoder();
         private bool _nulIsBinary;
         private bool _sawNul;
@@ -317,6 +366,9 @@ internal static class FileContentReader
             {
                 _md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
                 _sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                _canonical = new char[ChunkBytes];
+                _encoded = new byte[(ChunkBytes * 3) + 4];
+                _encoder = Encoding.UTF8.GetEncoder();
             }
         }
 
@@ -402,8 +454,8 @@ internal static class FileContentReader
                 // streamed digest stays identical to Encoding.UTF8.GetBytes.
                 while (true)
                 {
-                    _encoder.Convert(
-                        ReadOnlySpan<char>.Empty, _encoded, flush: true, out _, out var bytesUsed, out var completed);
+                    _encoder!.Convert(
+                        ReadOnlySpan<char>.Empty, _encoded!, flush: true, out _, out var bytesUsed, out var completed);
                     AppendDigests(_encoded.AsSpan(0, bytesUsed));
                     if (completed || bytesUsed == 0)
                     {
@@ -452,10 +504,10 @@ internal static class FileContentReader
                 // The digest covers the canonical text, i.e. what
                 // FileTextHelper.ComputeContentHashes would hash, so line endings are
                 // normalized on the way into the encoder.
-                var length = Normalize(chars, _canonical);
+                var length = Normalize(chars, _canonical!);
                 if (length > 0)
                 {
-                    Hash(_canonical.AsSpan(0, length));
+                    Hash(_canonical!.AsSpan(0, length));
                 }
             }
 
@@ -508,9 +560,9 @@ internal static class FileContentReader
             var offset = 0;
             while (offset < chars.Length)
             {
-                _encoder.Convert(
+                _encoder!.Convert(
                     chars[offset..],
-                    _encoded,
+                    _encoded!,
                     flush: false,
                     out var charsUsed,
                     out var bytesUsed,
@@ -723,5 +775,19 @@ internal static class FileContentReader
         protected override bool Materialize(int lineNumber) => true;
 
         protected override void Emit(int lineNumber, string text) => _lines.Add(text);
+    }
+
+    /// <summary>
+    /// FS-09 search sink: hands each completed canonical line to the caller's callback
+    /// with its 1-based number instead of collecting anything, so the search tool's
+    /// memory stays one line regardless of the file size. The line budget is inherited
+    /// from <see cref="LineSink"/>: an oversized line is refused while it is being
+    /// assembled, before it can become a string.
+    /// </summary>
+    private sealed class SearchLineSink(ResourceBudget budget, Action<int, string> emit) : LineSink(budget)
+    {
+        protected override bool Materialize(int lineNumber) => true;
+
+        protected override void Emit(int lineNumber, string text) => emit(lineNumber, text);
     }
 }

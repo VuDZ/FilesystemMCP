@@ -9,7 +9,6 @@ namespace FilesystemMcp;
 
 internal sealed class SearchTool : IMcpTool
 {
-    private const int BinaryProbeLength = 512;
     private const int MaxMatches = 50;
     private const int MaxSkippedDetails = 50;
     private const string DefaultMask = "*";
@@ -48,10 +47,17 @@ internal sealed class SearchTool : IMcpTool
     private string _workspaceRoot => _policy.Root;
 
     /// <summary>
-    /// Deterministic fault-injection seam for tests: invoked after the binary probe
-    /// and before decode while the single read stream is still open.
+    /// Deterministic fault-injection seam for tests: invoked after the signature probe
+    /// and before the decode while the single read stream is still open.
     /// </summary>
     internal Action<string>? AfterProbe { get; set; }
+
+    /// <summary>
+    /// Deterministic stream seam for tests; null in production. When set, a searched
+    /// file is read through this factory instead of being opened by path, so short
+    /// reads and a BOM split across chunks can be proven without a special file.
+    /// </summary>
+    internal Func<string, Stream>? OpenReadStreamForTests { get; set; }
 
     /// <summary>Deterministic test seam: invoked with the resolved path right before entry kind detection.</summary>
     internal Action<string>? BeforeEntryKindProbe { get; set; }
@@ -308,10 +314,20 @@ internal sealed class SearchTool : IMcpTool
                     BeforeFileSearch?.Invoke(physical);
                     try
                     {
-                        var skipReason = await SearchFileAsync(physical, relative, regex, result, token);
-                        if (skipReason is not null)
+                        var outcome = await SearchFileAsync(physical, relative, regex, MaxMatches - result.Count, token);
+                        if (outcome.SkipReason is not null)
                         {
-                            AddSkip(relative, skipReason);
+                            AddSkip(relative, outcome.SkipReason);
+                        }
+
+                        // Matches survive a budget skip — the file is text and part of it
+                        // was legitimately searched — but not a classification skip: a
+                        // binary or undecodable file contributes nothing, exactly like
+                        // read_file refuses it outright.
+                        foreach (var match in outcome.Matches)
+                        {
+                            result.Add(match);
+                            MatchRecorded?.Invoke(match.Path);
                         }
                     }
                     catch (OperationCanceledException)
@@ -384,76 +400,72 @@ internal sealed class SearchTool : IMcpTool
         var name = Path.GetFileName(path);
         return !string.IsNullOrEmpty(name) && SkippedDirectories.Contains(name);
     }
-    // One open read stream covers the binary probe, the decode and the search, so a
+    // One open read stream covers the signature probe, the decode and the search, so a
     // rename/delete between those steps can no longer abort the whole operation.
     /// <returns>
-    /// Null when the file was scanned, otherwise the FS-05 code that made search skip it
-    /// (currently only <c>resource_limit</c> for a file over <c>maxFileBytes</c> or a line
-    /// over <c>maxLineChars</c>). The caller reports it through the FS-04 skip channel.
+    /// The per-file outcome. The skip reason is null when the file was scanned;
+    /// otherwise it is the FS-05 code that made search skip it — <c>binary_file</c> or
+    /// <c>unsupported_encoding</c> from the shared decoder, or <c>resource_limit</c> for
+    /// a file over <c>maxFileBytes</c> or a line over <c>maxLineChars</c>. The caller
+    /// reports it through the FS-04 skip channel. <see cref="SearchFileOutcome.Matches"/>
+    /// carries the lines matched before a budget skip; a classification skip discards
+    /// them, because its verdict says the file was never text at all.
     /// </returns>
-    private async Task<string?> SearchFileAsync(
+    private async Task<SearchFileOutcome> SearchFileAsync(
         string filePath,
         string logicalPath,
         Regex regex,
-        List<(string Path, int Line)> result,
+        int matchCap,
         CancellationToken cancellationToken)
     {
-        await using var stream = FileTextHelper.OpenReadStream(filePath);
-        // FS-07: search reads the same files as read_file, so it honours the same byte
-        // budget. An over-budget file is *skipped*, not fatal: the client gets a complete
-        // result with an explicit reason through the existing FS-04 skip channel, which is
-        // exactly what `incomplete` means, instead of losing every other match to one
-        // oversized file.
-        if (stream.CanSeek && stream.Length > _budget.MaxFileBytes)
+        var matches = new List<(string Path, int Line)>();
+        try
         {
-            return ToolErrorCodes.ResourceLimit;
-        }
+            // FS-09: search decodes through the same streaming scanner read_file uses
+            // (BOM precedence, strict decode, deferred binary verdict, byte and line
+            // budgets), so a UTF-16/UTF-32 file with a BOM is searchable text here too
+            // and an invalid sequence anywhere — including past the probe — is a skip,
+            // never a silently replaced U+FFFD match. The whole file is scanned even
+            // after the match cap is reached, because the binary and encoding verdicts
+            // are only final at end-of-stream.
+            await FileContentReader.SearchLinesAsync(
+                filePath,
+                _budget,
+                (lineNumber, line) =>
+                {
+                    if (matches.Count >= matchCap)
+                    {
+                        return;
+                    }
 
-        var probe = new byte[BinaryProbeLength];
-        var bytesRead = await stream.ReadAsync(probe.AsMemory(0, BinaryProbeLength), cancellationToken);
-        for (var i = 0; i < bytesRead; i++)
+                    var lineMatches = regex.Matches(line);
+                    for (var i = 0; i < lineMatches.Count && matches.Count < matchCap; i++)
+                    {
+                        matches.Add((logicalPath, lineNumber));
+                    }
+                },
+                afterHeadProbe: () => AfterProbe?.Invoke(filePath),
+                openStream: OpenReadStreamForTests,
+                cancellationToken).ConfigureAwait(false);
+            return new SearchFileOutcome(null, matches);
+        }
+        catch (MutationException ex) when (ex.Code is ToolErrorCodes.BinaryFile or ToolErrorCodes.UnsupportedEncoding)
         {
-            // FS-09 owns BOM-aware encoding detection; this NUL probe is unchanged.
-            if (probe[i] == 0)
-            {
-                return null;
-            }
+            // The verdict is only final at end-of-stream, so it can arrive after matches
+            // were collected: a NUL or an invalid sequence late in the file reclassifies
+            // everything found in it. read_file refuses the same file outright, so the
+            // shared decoder must not report matches from it either.
+            return new SearchFileOutcome(ex.Code, []);
         }
-
-        AfterProbe?.Invoke(filePath);
-        stream.Position = 0;
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
-        var lineNumber = 0;
-        string? line;
-
-        while ((line = await reader.ReadLineAsync(cancellationToken)) is not null && result.Count < MaxMatches)
+        catch (ResourceLimitException)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            lineNumber++;
-            // The line budget applies here too, as a skip for the same reason: one
-            // pathological line must not cost the client every other file's matches. The
-            // check runs on the line the reader already produced, so the transient bound is
-            // the budget plus one line; the file-level byte cap above bounds that line.
-            if (line.Length > _budget.MaxLineChars)
-            {
-                return ToolErrorCodes.ResourceLimit;
-            }
-
-            var lineMatches = regex.Matches(line);
-            if (lineMatches.Count == 0)
-            {
-                continue;
-            }
-
-            for (var i = 0; i < lineMatches.Count && result.Count < MaxMatches; i++)
-            {
-                result.Add((logicalPath, lineNumber));
-                MatchRecorded?.Invoke(logicalPath);
-            }
+            // A budget skip is different: the file is text and part of it was searched,
+            // so the matches collected before the oversized value stay (FS-07).
+            return new SearchFileOutcome(ToolErrorCodes.ResourceLimit, matches);
         }
-
-        return null;
     }
+
+    private readonly record struct SearchFileOutcome(string? SkipReason, List<(string Path, int Line)> Matches);
 
     /// <summary>
     /// Renders the FS-04 result object inside the FS-07 response budget. The budget is
