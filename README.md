@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.8.0
+**Version:** 1.9.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -84,6 +84,27 @@ When using templates:
 - Copy `opencode.json.sample` to your OpenCode config and set:
   - `command[0]` -> path to built `FilesystemMCP.exe`
   - `command[1]` -> target workspace root path
+
+### Installer
+
+`install2opencode.ps1` does the two steps above and merges into an existing configuration instead of replacing it:
+
+```powershell
+# from the publish directory, installing into another project
+.\install2opencode.ps1 -WorkspacePath D:\MyProject
+# from the target project, using the binary next to the script
+C:\Tools\FilesystemMCP\install2opencode.ps1
+# strict jail for this workspace
+.\install2opencode.ps1 -WorkspacePath D:\MyProject -AllowSymLinks false
+# show what would change, write nothing
+.\install2opencode.ps1 -WorkspacePath D:\MyProject -WhatIf
+```
+
+- Existing `model`, other `mcp` servers, unknown top-level settings and the extra fields of an existing `filesystem-mcp` entry are preserved. Only `type` and the command prefix (binary, workspace) are rewritten; custom `--option` arguments survive, positional leftovers do not. `$schema` is added only when absent.
+- Strict JSON only. Comments, trailing commas, single quotes, trailing content, a non-object root or a non-object `mcp` are refused with a nonzero exit and without touching the file. An explicit `"mcp": null` counts as "not configured". Unknown settings survive at any realistic nesting; a configuration nested deeper than the serializer can reproduce is refused rather than written with settings dropped.
+- The first mutating run writes a byte-exact backup next to the config (`opencode.json.filesystemmcp-backup-*.bak`) and prints its path. A run whose config already matches writes nothing and creates no backup.
+- Both files are prepared first, then written to a temp file and renamed into place. If the second commit fails, the config is restored from the backup and the recovery outcome is reported.
+- `-AllowSymLinks` (default `true`) only shapes the command; direct relative/absolute escapes from the workspace stay rejected in both modes. `-WhatIf` reports without writing, `-AsJson` prints one JSON summary line. The script needs `AGENTS.md.sample` next to it.
 
 ### MCP Tools
 
@@ -179,7 +200,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.8.0
+**Версия:** 1.9.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -235,6 +256,27 @@ dotnet publish -c Release
 - Скопируй `opencode.json.sample` в конфиг OpenCode и укажи:
   - `command[0]` -> путь к собранному `FilesystemMCP.exe`
   - `command[1]` -> путь к целевой workspace-директории
+
+### Установщик
+
+`install2opencode.ps1` делает оба шага сам и **дополняет** существующую конфигурацию, а не заменяет её:
+
+```powershell
+# из publish-каталога, установка в другой проект
+.\install2opencode.ps1 -WorkspacePath D:\MyProject
+# из целевого проекта, binary рядом со скриптом
+C:\Tools\FilesystemMCP\install2opencode.ps1
+# строгий jail для этого workspace
+.\install2opencode.ps1 -WorkspacePath D:\MyProject -AllowSymLinks false
+# показать, что изменится, и ничего не писать
+.\install2opencode.ps1 -WorkspacePath D:\MyProject -WhatIf
+```
+
+- Существующие `model`, другие `mcp` servers, неизвестные top-level настройки и дополнительные поля уже имеющегося `filesystem-mcp` сохраняются. Переписываются только `type` и префикс command (binary, workspace); пользовательские `--option` аргументы остаются, позиционные остатки — нет. `$schema` добавляется только при отсутствии.
+- Только строгий JSON. Комментарии, trailing comma, одинарные кавычки, trailing content, необъектный корень или необъектный `mcp` — отказ с ненулевым кодом и без изменения файла. Явный `"mcp": null` считается «не настроено». Неизвестные настройки переживают установку на любой разумной вложенности; конфигурация, которую сериализатор не может воспроизвести без потери настроек, отвергается, а не записывается урезанной.
+- Первый изменяющий запуск кладёт рядом с config побайтовый backup (`opencode.json.filesystemmcp-backup-*.bak`) и печатает его путь. Запуск, чей config уже совпадает, не пишет ничего и backup не создаёт.
+- Оба файла сначала готовятся, затем пишутся во временный файл и переименовываются на место. Если второй commit сорвался, config восстанавливается из backup, а результат восстановления сообщается.
+- `-AllowSymLinks` (по умолчанию `true`) влияет только на command: прямые absolute/`../` выходы из workspace запрещены в обоих режимах. `-WhatIf` показывает отчёт без записи, `-AsJson` печатает одну JSON-строку. Скрипту нужен `AGENTS.md.sample` рядом с собой.
 
 ### MCP Инструменты
 
@@ -332,4 +374,4 @@ dotnet publish -c Release
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован в версии 1.7.0 и принят независимым ревью (в первом раунде подняты замечания, они исправлены и подтверждены во втором раунде): отказоустойчивый logger (best-effort все стадии, пользовательский каталог и `--logDirectory`, bounded queue с одним writer-ом, ротация 10 MiB × 5, запрет content в логах, UTC + correlation, bounded exit flush); полный текст — в [06-fail-safe-logging.md](docs/06-fail-safe-logging.md). FS-07 реализован в версии 1.8.0: бюджеты запуска на кадр, файл, строку, ответ, обход, дедлайн и параллельные чтения, отмена по `requestId` не блокирует ping, отказ чтения не материализует файл целиком; полный текст — в [07-resource-budgets.md](docs/07-resource-budgets.md). Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован в версии 1.7.0 и принят независимым ревью (в первом раунде подняты замечания, они исправлены и подтверждены во втором раунде): отказоустойчивый logger (best-effort все стадии, пользовательский каталог и `--logDirectory`, bounded queue с одним writer-ом, ротация 10 MiB × 5, запрет content в логах, UTC + correlation, bounded exit flush); полный текст — в [06-fail-safe-logging.md](docs/06-fail-safe-logging.md). FS-07 реализован в версии 1.8.0: бюджеты запуска на кадр, файл, строку, ответ, обход, дедлайн и параллельные чтения, отмена по `requestId` не блокирует ping, отказ чтения не материализует файл целиком; полный текст — в [07-resource-budgets.md](docs/07-resource-budgets.md). FS-08 реализован в версии 1.9.0: установщик разбирает строгий JSON, сохраняет неизвестные настройки, чужие servers и дополнительные поля `filesystem-mcp`, пишет config и AGENTS.md через temp + atomic rename, делает побайтовый backup только на изменяющем запуске, восстанавливает config из backup при отказе второго commit и получил `-AllowSymLinks`/`-WhatIf`/`-AsJson`; полный текст — в [08-installer-merge.md](docs/08-installer-merge.md). Остальные спецификации описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

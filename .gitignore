@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# Local scratch: probes, fault-injection harnesses, comparison fixtures.
+buildwork/
+
 # Publish output (including AOT/native artifacts)
 publish/
 artifacts/
