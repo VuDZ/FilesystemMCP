@@ -31,6 +31,15 @@ public sealed class TransportBudgetTests
     private const long DeadlineMilliseconds = 300;
 
     /// <summary>
+    /// Extra wall-clock time after <see cref="DeadlineMilliseconds"/>.
+    /// <c>CancelAfter</c> is a timer on the server process. A parallel suite has
+    /// delayed that timer by more than a small multiple of a 300 ms budget; releasing
+    /// then lets the write commit, and the case fails even though a fired deadline
+    /// would have kept the original bytes. Run alone, the timer is on time.
+    /// </summary>
+    private static readonly TimeSpan DeadlineTimerSlack = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// Failure deadline for responses that are only produced after the test releases a
     /// barrier the test itself holds. It is a watchdog, not a budget for the server.
     /// </summary>
@@ -233,7 +242,8 @@ public sealed class TransportBudgetTests
 
         // The deadline is a timer inside the server and the parked invocation cannot
         // observe it until it returns from the barrier, so this bounded wait is the only
-        // way to let it fire. Nothing is asserted about how long anything took: the
+        // way to let it fire. The slack covers a timer queue that runs late under
+        // parallel load. Nothing is asserted about how long anything took: the
         // assertions below are about the response and the bytes after the release.
         await LetDeadlineElapseAsync(DeadlineMilliseconds);
 
@@ -695,7 +705,7 @@ public sealed class TransportBudgetTests
     /// </summary>
     private static async Task LetDeadlineElapseAsync(long milliseconds)
     {
-        var until = Environment.TickCount64 + (milliseconds * 4) + 250;
+        var until = Environment.TickCount64 + milliseconds + (long)DeadlineTimerSlack.TotalMilliseconds;
         while (Environment.TickCount64 < until)
         {
             await Task.Delay(25);
