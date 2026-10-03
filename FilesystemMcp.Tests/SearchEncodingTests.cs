@@ -50,7 +50,8 @@ public sealed class SearchEncodingTests
         // read_file splits on CRLF, LF and lone CR; line 2 must be the very line search
         // reports, so both tools agree on the numbering of the same stored bytes.
         var range = await new FileService(sandbox.Workspace).ReadFileAsync("endings.txt", new(StartLine: 2, EndLine: 2));
-        Assert.Equal("needle Привет", range.Text);
+        // FS-10: the selected line keeps the delimiter that closed it in the source.
+        Assert.Equal("needle Привет\n", range.Text);
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(sandbox.Workspace).ExecuteAsync(
             ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         var match = Assert.Single(payload.GetProperty("matches").EnumerateArray());

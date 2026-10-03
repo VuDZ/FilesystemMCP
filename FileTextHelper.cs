@@ -72,6 +72,13 @@ internal static class FileTextHelper
             FileShare.ReadWrite | FileShare.Delete,
             bufferSize: 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
+    /// <summary>
+    /// FS-10 reference selection over an already canonical (LF) text: selected lines are
+    /// joined with one LF, a leading blank selected line survives, and the LF that closed
+    /// the last selected line in the source is returned too — so the answer is an exact
+    /// substring of the canonical text and a terminal newline survives a full-file read.
+    /// Keeps <see cref="FileContentReader"/>'s streaming sink and this helper in lockstep.
+    /// </summary>
     public static (string Text, int TotalLines) ExtractRequestedContent(
         string canonicalContent,
         int? startLine,
@@ -79,42 +86,52 @@ internal static class FileTextHelper
         int effectiveMaxLines,
         bool isFullFileRead)
     {
-        using var reader = new StringReader(canonicalContent);
-        var currentLine = 0;
         var selected = new StringBuilder(capacity: 4096);
-        string? line;
+        var hasSelection = false;
+        var lastClosedByDelimiter = false;
+        var currentLine = 0;
+        var index = 0;
 
-        while ((line = reader.ReadLine()) is not null)
+        while (index < canonicalContent.Length)
         {
+            var delimiter = canonicalContent.IndexOf('\n', index);
+            string line;
+            bool closedByDelimiter;
+            if (delimiter < 0)
+            {
+                line = canonicalContent[index..];
+                closedByDelimiter = false;
+                index = canonicalContent.Length;
+            }
+            else
+            {
+                line = canonicalContent[index..delimiter];
+                closedByDelimiter = true;
+                index = delimiter + 1;
+            }
+
             currentLine++;
-
-            if (isFullFileRead && currentLine > effectiveMaxLines)
+            var materialize = isFullFileRead
+                ? currentLine <= effectiveMaxLines
+                : currentLine >= (startLine ?? 1) && currentLine <= (endLine ?? int.MaxValue);
+            if (!materialize)
             {
-                break;
+                continue;
             }
 
-            if (startLine.HasValue && endLine.HasValue)
-            {
-                if (currentLine < startLine.Value || currentLine > endLine.Value)
-                {
-                    continue;
-                }
-            }
-
-            if (selected.Length > 0)
+            if (hasSelection)
             {
                 selected.Append('\n');
             }
 
             selected.Append(line);
+            hasSelection = true;
+            lastClosedByDelimiter = closedByDelimiter;
         }
 
-        if (isFullFileRead)
+        if (hasSelection && lastClosedByDelimiter)
         {
-            while (reader.ReadLine() is not null)
-            {
-                currentLine++;
-            }
+            selected.Append('\n');
         }
 
         return (selected.ToString(), currentLine);

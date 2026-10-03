@@ -7,9 +7,20 @@ namespace FilesystemMcp;
 /// One bounded canonical read of a text file: the selected canonical text, the MD5 and
 /// SHA-256 of the <em>whole</em> canonical file, and the number of lines the whole file
 /// contains. The hashes always describe the complete normalized file, even when only a
-/// line range was materialized.
+/// line range was materialized. FS-10 adds the selection metadata: the actually returned
+/// 1-based range (<see cref="StartLine"/>/<see cref="EndLine"/>, null for an empty
+/// selection), whether a line cap truncated the answer and whether lines exist past the
+/// returned <see cref="EndLine"/>.
 /// </summary>
-internal sealed record CanonicalContent(string Text, string Md5, string Sha256, int TotalLines);
+internal sealed record CanonicalContent(
+    string Text,
+    string Md5,
+    string Sha256,
+    int TotalLines,
+    int? StartLine = null,
+    int? EndLine = null,
+    bool Truncated = false,
+    bool HasMore = false);
 
 /// <summary>
 /// FS-07 bounded, streaming reader for text content. It replaces the previous
@@ -110,7 +121,15 @@ internal static class FileContentReader
             cancellationToken).ConfigureAwait(false);
 
         var sink = (CanonicalSink)result.Sink;
-        return new CanonicalContent(sink.SelectedText, result.Digests.Md5, result.Digests.Sha256, sink.TotalLines);
+        return new CanonicalContent(
+            sink.SelectedText,
+            result.Digests.Md5,
+            result.Digests.Sha256,
+            sink.TotalLines,
+            sink.ActualStartLine,
+            sink.ActualEndLine,
+            sink.Truncated,
+            sink.HasMore);
     }
 
     /// <summary>
@@ -622,7 +641,7 @@ internal static class FileContentReader
                         index++;
                     }
 
-                    EndLine();
+                    EndLine(closedByDelimiter: true);
                     continue;
                 }
 
@@ -654,28 +673,42 @@ internal static class FileContentReader
                     index = at + 1;
                 }
 
-                EndLine();
+                EndLine(closedByDelimiter: true);
             }
         }
 
-        /// <summary>Closes the text at end of file, matching StringReader.ReadLine's count.</summary>
+        /// <summary>
+        /// Closes the text at end of file, matching StringReader.ReadLine's count. A pending
+        /// CR closes its line as a delimiter; a bare trailing line has no delimiter after it.
+        /// </summary>
         internal void Complete()
         {
             if (_pendingCr)
             {
                 _pendingCr = false;
-                EndLine();
+                EndLine(closedByDelimiter: true);
             }
             else if (_hasPendingLine)
             {
-                EndLine();
+                EndLine(closedByDelimiter: false);
             }
+
+            OnScanCompleted();
+        }
+
+        /// <summary>
+        /// Called once after the last line is closed, when <see cref="TotalLines"/> is final;
+        /// lets a sink append trailing material that depends on how the last selected line
+        /// ended and on the final line count.
+        /// </summary>
+        internal virtual void OnScanCompleted()
+        {
         }
 
         /// <summary>True when this line belongs to the requested output.</summary>
         protected abstract bool Materialize(int lineNumber);
 
-        protected abstract void Emit(int lineNumber, string text);
+        protected abstract void Emit(int lineNumber, string text, bool closedByDelimiter);
 
         private void AppendSegment(ReadOnlySpan<char> segment)
         {
@@ -700,22 +733,24 @@ internal static class FileContentReader
             _hasPendingLine = true;
         }
 
-        private void EndLine()
+        private void EndLine(bool closedByDelimiter)
         {
             TotalLines++;
             var text = _line.ToString();
             _line.Clear();
             _lineLength = 0;
             _hasPendingLine = false;
-            Emit(TotalLines, text);
+            Emit(TotalLines, text, closedByDelimiter);
         }
     }
 
     /// <summary>
-    /// Selected-text sink. Separator handling is deliberately identical to
-    /// <see cref="FileTextHelper.ExtractRequestedContent"/>, including its
-    /// "append the newline only when something was already selected" rule, so a leading
-    /// empty selected line produces exactly the same text as before.
+    /// Selected-text sink. FS-10 selection semantics: selected lines are joined with one LF
+    /// between neighbours, a leading blank selected line is kept (the separator decision
+    /// tracks "a line was selected", not "the builder is non-empty"), and the LF that closed
+    /// the last selected line in the source is part of the answer when it existed — so a
+    /// range or a capped prefix is an exact substring of the canonical text and a terminal
+    /// newline survives a full-file read.
     /// </summary>
     /// <remarks>
     /// <paramref name="textLimit"/> is the hard bound on the materialized text, in UTF-16
@@ -733,15 +768,31 @@ internal static class FileContentReader
         int? textLimit) : LineSink(budget)
     {
         private readonly StringBuilder _selected = new();
+        private bool _hasSelection;
+        private int _firstSelectedLine;
+        private int _lastSelectedLine;
+        private bool _lastSelectedClosedByDelimiter;
 
         internal string SelectedText => _selected.ToString();
+
+        /// <summary>First line actually returned; null when nothing was selected.</summary>
+        internal int? ActualStartLine => _hasSelection ? _firstSelectedLine : null;
+
+        /// <summary>Last line actually returned; null when nothing was selected.</summary>
+        internal int? ActualEndLine => _hasSelection ? _lastSelectedLine : null;
+
+        /// <summary>FS-10: true only when a cap cut the answer, never for a plain range request.</summary>
+        internal bool Truncated { get; private set; }
+
+        /// <summary>FS-10: lines exist in the file after <see cref="ActualEndLine"/>.</summary>
+        internal bool HasMore { get; private set; }
 
         protected override bool Materialize(int lineNumber) =>
             captureFullText
                 ? maxLines is null || lineNumber <= maxLines.Value
                 : lineNumber >= (startLine ?? 1) && lineNumber <= (endLine ?? int.MaxValue);
 
-        protected override void Emit(int lineNumber, string text)
+        protected override void Emit(int lineNumber, string text, bool closedByDelimiter)
         {
             if (!Materialize(lineNumber))
             {
@@ -750,19 +801,60 @@ internal static class FileContentReader
 
             if (textLimit is { } limit)
             {
-                var separator = _selected.Length > 0 ? 1 : 0;
-                if (_selected.Length + separator + text.Length > limit)
+                var separator = _hasSelection ? 1 : 0;
+                // The LF that closes this line belongs to the answer whenever this turns
+                // out to be the last selected line, so it is charged against the budget
+                // here — while the stream is still being read — instead of after the
+                // whole file has been scanned: an over-budget refusal carries neither
+                // text nor hash, so there is no tail worth reading (FS-10 / FS-07 R1, R8).
+                // For an intermediate selected line this bound never exceeds the final
+                // text (what follows only appends), and for the last selected line it is
+                // exactly the final length, so no fitting answer is refused by the +1.
+                var closingLf = closedByDelimiter ? 1 : 0;
+                if (_selected.Length + separator + text.Length + closingLf > limit)
                 {
                     throw ResourceBudgets.Limit("the selected text is larger than maxResponseChars");
                 }
             }
 
-            if (_selected.Length > 0)
+            if (_hasSelection)
             {
                 _selected.Append('\n');
             }
 
             _selected.Append(text);
+            if (!_hasSelection)
+            {
+                _hasSelection = true;
+                _firstSelectedLine = lineNumber;
+            }
+
+            _lastSelectedLine = lineNumber;
+            _lastSelectedClosedByDelimiter = closedByDelimiter;
+        }
+
+        internal override void OnScanCompleted()
+        {
+            if (!_hasSelection)
+            {
+                return;
+            }
+
+            // The delimiter that closed the last selected line in the source belongs to the
+            // answer. It is appended here, after the scan, because only the end of the file
+            // proves the last selected line had no delimiter after it.
+            if (_lastSelectedClosedByDelimiter)
+            {
+                if (textLimit is { } limit && _selected.Length + 1 > limit)
+                {
+                    throw ResourceBudgets.Limit("the selected text is larger than maxResponseChars");
+                }
+
+                _selected.Append('\n');
+            }
+
+            HasMore = _lastSelectedLine < TotalLines;
+            Truncated = captureFullText && HasMore;
         }
     }
 
@@ -774,7 +866,7 @@ internal static class FileContentReader
 
         protected override bool Materialize(int lineNumber) => true;
 
-        protected override void Emit(int lineNumber, string text) => _lines.Add(text);
+        protected override void Emit(int lineNumber, string text, bool closedByDelimiter) => _lines.Add(text);
     }
 
     /// <summary>
@@ -788,6 +880,6 @@ internal static class FileContentReader
     {
         protected override bool Materialize(int lineNumber) => true;
 
-        protected override void Emit(int lineNumber, string text) => emit(lineNumber, text);
+        protected override void Emit(int lineNumber, string text, bool closedByDelimiter) => emit(lineNumber, text);
     }
 }

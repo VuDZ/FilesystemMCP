@@ -103,7 +103,8 @@ public sealed class TextEncodingTests
         Assert.Equal(hash, full.Sha256);
         Assert.Equal(hash, range.Sha256);
         Assert.Equal(hash, FileTextHelper.ComputeContentHashes(parsed.Document.Canonical).Sha256);
-        Assert.Equal("beta", range.Text);
+        // FS-10: the selected line keeps the delimiter that closed it in the source.
+        Assert.Equal("beta\n", range.Text);
         Assert.NotEqual(FileTextHelper.ComputeContentHashes(range.Text).Sha256, range.Sha256);
         Assert.DoesNotContain('\uFEFF', full.Text);
     }

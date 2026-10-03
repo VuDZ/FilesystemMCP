@@ -92,11 +92,29 @@ internal sealed class FileService
             }
         }
 
-        return new ReadFileResult(resolvedPath, content.Text, content.Md5, content.Sha256);
+        return new ReadFileResult(
+            resolvedPath,
+            content.Text,
+            content.Md5,
+            content.Sha256,
+            content.TotalLines,
+            content.StartLine,
+            content.EndLine,
+            content.Truncated,
+            content.HasMore);
     }
 
     public static int ResolveEffectiveMaxLines(ReadFileOptions options)
     {
+        // FS-10: max_lines without the explicit opt-in is an invalid argument, not a value
+        // to silently ignore — the client believes it narrowed the read when it did not.
+        if (options.MaxLines.HasValue && !options.AllowLargeRead)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "max_lines requires allow_large_read=true.");
+        }
+
         if (!options.AllowLargeRead)
         {
             return DefaultMaxLines;

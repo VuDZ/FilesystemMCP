@@ -59,11 +59,12 @@ public sealed class ResourceBudgetsTests
             "resource_limit");
 
         // Control: the identical request succeeds under the default budget, so the byte
-        // cap is the only explanation for the refusal above.
+        // cap is the only explanation for the refusal above. FS-10: the delimiter that
+        // closed line 2 is part of the returned text.
         await using var control = await ServerProcess.StartAsync(sandbox.Workspace);
         var ok = await control.ToolAsync("read_file", new { path = "file.txt", start_line = 2, end_line = 2 });
         McpAssert.Success(ok);
-        Assert.Equal("bravo", ServerProcess.Payload(ok).GetProperty("text").GetString());
+        Assert.Equal("bravo\n", ServerProcess.Payload(ok).GetProperty("text").GetString());
     }
 
     // ---- FS-07 line budget (stdio) ------------------------------------------------------
@@ -157,7 +158,8 @@ public sealed class ResourceBudgetsTests
         var bytes = Sandbox.Utf8.GetBytes(content);
         var (expectedText, expectedLines) = FileTextHelper.ExtractRequestedContent(
             content, null, null, effectiveMaxLines: 2, isFullFileRead: true);
-        Assert.Equal("a\nb", expectedText);
+        // FS-10: the delimiter that closed the capped last line belongs to the answer.
+        Assert.Equal("a\nb\n", expectedText);
         Assert.Equal(4, expectedLines);
 
         var read = await new FileService(sandbox.Workspace)
@@ -203,7 +205,8 @@ public sealed class ResourceBudgetsTests
             var range = await FileContentReader.ReadCanonicalAsync(
                 path, 2, 2, false, ResourceBudget.Default, default,
                 _ => new GeneratedStream(bytes, seekable: true, chunkLimit: chunk));
-            Assert.Equal("beta", range.Text);
+            // FS-10: the selected line keeps the delimiter that closed it in the source.
+            Assert.Equal("beta\n", range.Text);
             Assert.Equal(md5, range.Md5);
             Assert.Equal(sha256, range.Sha256);
             Assert.Equal(expectedLines, range.TotalLines);
@@ -380,7 +383,8 @@ public sealed class ResourceBudgetsTests
             OpenReadStreamForTests = _ => stream = new GeneratedStream(length, "line\n", seekable: false)
         }.ReadFileAsync("file.txt", new(StartLine: 1, EndLine: 1));
 
-        Assert.Equal("line", read.Text);
+        // FS-10: the selected line keeps the delimiter that closed it in the source.
+        Assert.Equal("line\n", read.Text);
         Assert.Equal(md5, read.Md5);
         Assert.Equal(sha256, read.Sha256);
         Assert.NotNull(stream);
@@ -392,7 +396,7 @@ public sealed class ResourceBudgetsTests
         var scanned = await FileContentReader.ReadCanonicalAsync(
             "file.txt", 1, 1, false, ResourceBudget.Default, default,
             _ => new GeneratedStream(length, "line\n", seekable: false));
-        Assert.Equal("line", scanned.Text);
+        Assert.Equal("line\n", scanned.Text);
         Assert.Equal(lineCount, scanned.TotalLines);
         Assert.Equal(sha256, scanned.Sha256);
 
@@ -553,8 +557,9 @@ public sealed class ResourceBudgetsTests
         const int lineCount = 1024;
         var pattern = new string('a', lineChars) + "\n";
         var fileBytes = (long)pattern.Length * lineCount;
-        // Canonical text: every line is followed by one LF, the last one has no trailing LF.
-        var canonicalChars = (lineCount * lineChars) + lineCount - 1;
+        // Canonical text: every line of this fixture is closed by an LF, including the
+        // last one, and FS-10 keeps that terminal LF in a full-file read.
+        var canonicalChars = lineCount * (lineChars + 1);
         var budget = ResourceBudget.Default with { MaxLineChars = lineChars, MaxResponseChars = 16 * 1024 };
 
         ReadFileOptions[] raisedLineCap =
@@ -585,7 +590,8 @@ public sealed class ResourceBudgetsTests
             Budget = budget,
             OpenReadStreamForTests = _ => ranged = new GeneratedStream(fileBytes, pattern, seekable: false)
         }.ReadFileAsync("file.txt", new ReadFileOptions(StartLine: 1, EndLine: 2));
-        Assert.Equal((2 * lineChars) + 1, range.Text.Length);
+        // Two full lines, the LF between them and (FS-10) the LF that closed line 2.
+        Assert.Equal((2 * lineChars) + 2, range.Text.Length);
         Assert.Equal(fileBytes, ranged!.BytesHandedOut);
 
         // Control: the identical full-file read succeeds once the response budget is above
@@ -598,7 +604,8 @@ public sealed class ResourceBudgetsTests
         }.ReadFileAsync("file.txt", new ReadFileOptions(AllowLargeRead: true));
         Assert.Equal(canonicalChars, read.Text.Length);
         Assert.StartsWith(new string('a', 64), read.Text, StringComparison.Ordinal);
-        Assert.EndsWith(new string('a', 64), read.Text, StringComparison.Ordinal);
+        // FS-10: the terminal LF of the last line is part of the full-file text.
+        Assert.EndsWith(new string('a', 64) + "\n", read.Text, StringComparison.Ordinal);
     }
 
     /// <summary>
