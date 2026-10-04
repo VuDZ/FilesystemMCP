@@ -57,10 +57,6 @@ internal sealed record SearchParams(
     [property: JsonPropertyName("regex")] string Regex,
     [property: JsonPropertyName("file_mask")] string FileMask);
 
-internal sealed record AppendToFileParams(
-    [property: JsonPropertyName("path")] string Path,
-    [property: JsonPropertyName("content")] string Content);
-
 internal sealed record ToolsCallParams(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("arguments")] JsonElement? Arguments);
@@ -83,9 +79,16 @@ internal sealed record InitializeResult(
     [property: JsonPropertyName("capabilities")] JsonElement Capabilities,
     [property: JsonPropertyName("serverInfo")] ServerInfo ServerInfo);
 
+internal sealed record DirectoryEntry(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("type")] string Type);
+
+// Untruncated list is exactly entries. truncated/truncation_reason appear only when a cap fired
+// (FS-07); null is omitted, matching the hand-built payload.
 internal sealed record ListDirectoryResult(
-    [property: JsonPropertyName("path")] string Path,
-    [property: JsonPropertyName("entries")] IReadOnlyList<string> Entries);
+    [property: JsonPropertyName("entries")] IReadOnlyList<DirectoryEntry> Entries,
+    [property: JsonPropertyName("truncated")] bool? Truncated = null,
+    [property: JsonPropertyName("truncation_reason")] string? TruncationReason = null);
 
 // FS-10 read metadata. total_lines always describes the whole file; start_line/end_line
 // describe the range actually returned (omitted when the selection is empty, because the
@@ -103,8 +106,23 @@ internal sealed record ReadFileResult(
     [property: JsonPropertyName("truncated")] bool Truncated,
     [property: JsonPropertyName("has_more")] bool HasMore);
 
+internal sealed record SearchMatch(
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("line")] int Line);
+
+internal sealed record SearchSkip(
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("code")] string Code);
+
+// FS-04/FS-07 search object. truncation_reason is omitted unless a budget cut the result.
 internal sealed record SearchResult(
-    [property: JsonPropertyName("matches")] IReadOnlyList<string> Matches);
+    [property: JsonPropertyName("matches")] IReadOnlyList<SearchMatch> Matches,
+    [property: JsonPropertyName("truncated")] bool Truncated,
+    [property: JsonPropertyName("incomplete")] bool Incomplete,
+    [property: JsonPropertyName("skipped_count")] int SkippedCount,
+    [property: JsonPropertyName("skipped")] IReadOnlyList<SearchSkip> Skipped,
+    [property: JsonPropertyName("truncation_reason")] string? TruncationReason = null);
 
 internal sealed record CreateFileResult(
     [property: JsonPropertyName("path")] string Path,
@@ -118,12 +136,11 @@ internal sealed record ReplaceInFileResult(
 
 internal sealed record ReplaceInFileToolResult(
     [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("md5")] string Md5,
+    [property: JsonPropertyName("sha256")] string Sha256,
     [property: JsonPropertyName("new_hash")] string NewHash,
     [property: JsonPropertyName("snippet")] string Snippet);
-
-internal sealed record WriteResult(
-    [property: JsonPropertyName("path")] string Path,
-    [property: JsonPropertyName("status")] string Status);
 
 internal sealed record ToolDefinition(
     [property: JsonPropertyName("name")] string Name,
@@ -162,7 +179,7 @@ internal sealed record ErrorCorrelationData(
 internal sealed record TruncationReasonData(
     [property: JsonPropertyName("truncation_reason")] string TruncationReason);
 
-internal sealed record CreateFileToolResult(string Status, string Md5, string Sha256);
+internal sealed record CreateFileToolResult(string Status, string Path, string Md5, string Sha256);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -177,19 +194,20 @@ internal sealed record CreateFileToolResult(string Status, string Md5, string Sh
 [JsonSerializable(typeof(ReplaceInFileParams))]
 [JsonSerializable(typeof(ListDirectoryParams))]
 [JsonSerializable(typeof(SearchParams))]
-[JsonSerializable(typeof(AppendToFileParams))]
 [JsonSerializable(typeof(ToolsCallParams))]
 [JsonSerializable(typeof(InitializeParams))]
 [JsonSerializable(typeof(ClientInfo))]
 [JsonSerializable(typeof(ServerInfo))]
 [JsonSerializable(typeof(InitializeResult))]
+[JsonSerializable(typeof(DirectoryEntry))]
 [JsonSerializable(typeof(ListDirectoryResult))]
 [JsonSerializable(typeof(ReadFileResult))]
+[JsonSerializable(typeof(SearchMatch))]
+[JsonSerializable(typeof(SearchSkip))]
 [JsonSerializable(typeof(SearchResult))]
 [JsonSerializable(typeof(CreateFileResult))]
 [JsonSerializable(typeof(ReplaceInFileResult))]
 [JsonSerializable(typeof(ReplaceInFileToolResult))]
-[JsonSerializable(typeof(WriteResult))]
 [JsonSerializable(typeof(ToolDefinition))]
 [JsonSerializable(typeof(ToolsListResult))]
 [JsonSerializable(typeof(ToolCallContent))]

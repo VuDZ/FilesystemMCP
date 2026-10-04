@@ -13,7 +13,7 @@ public sealed class TextEncodingTests
         var path = sandbox.Write("cp1251.txt", "");
         byte[] original = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0x74, 0x6F, 0x6B, 0x65, 0x6E];
         await File.WriteAllBytesAsync(path, original);
-        var error = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReadFileAsync("cp1251.txt", new()));
+        var error = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReadFileAsync("cp1251.txt", new()));
         Assert.Equal("unsupported_encoding", error.Code);
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
     }
@@ -25,7 +25,7 @@ public sealed class TextEncodingTests
         using var sandbox = new Sandbox();
         var encoding = EncodingFor(encodingName);
         var path = sandbox.Write("file.txt", "Привет old\r\nsecond\r\n", encoding);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", "old", "new", read.Sha256);
         var expected = encoding.GetPreamble().Concat(encoding.GetBytes("Привет new\r\nsecond\r\n")).ToArray();
@@ -44,7 +44,7 @@ public sealed class TextEncodingTests
         var payload = InvalidPayload(encodingName, edge);
         var path = sandbox.Write("broken.txt", "");
         await File.WriteAllBytesAsync(path, payload);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var readError = await Assert.ThrowsAsync<MutationException>(() => files.ReadFileAsync("broken.txt", new()));
         Assert.Equal("unsupported_encoding", readError.Code);
         await using (var stream = new ShortReadStream(payload, 1))
@@ -88,7 +88,7 @@ public sealed class TextEncodingTests
         const string stored = "Привет\r\nbeta\r\ngamma";
         const string canonical = "Привет\nbeta\ngamma";
         var path = sandbox.Write("file.txt", stored, EncodingFor(encodingName));
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var full = await files.ReadFileAsync("file.txt", new());
         var range = await files.ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 2));
         await using var stream = new ShortReadStream(await File.ReadAllBytesAsync(path), 1);
@@ -118,7 +118,7 @@ public sealed class TextEncodingTests
         const string original = "pre\r\nOLD\rother\npost\r\n";
         const string expected = "pre\r\nX\rY\npost\r\n";
         var path = sandbox.Write("file.txt", original, encoding);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", "OLD\nother", "X\nY", read.Sha256);
         Assert.Equal(encoding.GetPreamble().Concat(encoding.GetBytes(expected)).ToArray(), await File.ReadAllBytesAsync(path));
@@ -129,7 +129,7 @@ public sealed class TextEncodingTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "a\rb\rold\rc");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", "old", "x\ny", read.Sha256);
         Assert.Equal(new UTF8Encoding(false, true).GetBytes("a\rb\rx\ry\rc"), await File.ReadAllBytesAsync(path));
@@ -145,7 +145,7 @@ public sealed class TextEncodingTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", original);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", target, replacement, read.Sha256);
         Assert.Equal(new UTF8Encoding(false, true).GetBytes(expected), await File.ReadAllBytesAsync(path));
@@ -157,7 +157,7 @@ public sealed class TextEncodingTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("empty.txt", "");
         await File.WriteAllBytesAsync(path, []);
-        var read = await new FileService(sandbox.Workspace).ReadFileAsync("empty.txt", new());
+        var read = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("empty.txt", new());
         Assert.Equal("", read.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, read.Sha256);
         Assert.Empty(await File.ReadAllBytesAsync(path));
@@ -171,7 +171,7 @@ public sealed class TextEncodingTests
         var payload = EncodingFor(encodingName).GetPreamble();
         var path = sandbox.Write("bom.txt", "");
         await File.WriteAllBytesAsync(path, payload);
-        var read = await new FileService(sandbox.Workspace).ReadFileAsync("bom.txt", new());
+        var read = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("bom.txt", new());
         Assert.Equal("", read.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, read.Sha256);
         Assert.Equal(payload, await File.ReadAllBytesAsync(path));
@@ -187,7 +187,7 @@ public sealed class TextEncodingTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "keep\r\n");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", "keep", "KEEP", read.Sha256);
         Assert.Equal(new UTF8Encoding(false, true).GetBytes("KEEP\r\n"), await File.ReadAllBytesAsync(path));
@@ -198,7 +198,7 @@ public sealed class TextEncodingTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "head\r\nold\r\nmid\r\ntail\r\n");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await files.ReplaceInFileAsync("file.txt", "old\nmid", "new\nline\nextra", read.Sha256);
         Assert.Equal(new UTF8Encoding(false, true).GetBytes("head\r\nnew\r\nline\r\nextra\r\ntail\r\n"), await File.ReadAllBytesAsync(path));
@@ -208,12 +208,12 @@ public sealed class TextEncodingTests
     public async Task CreateWritesUtf8WithoutBomAndKeepsSuppliedLineEndings()
     {
         using var sandbox = new Sandbox();
-        var created = await new MutationService(sandbox.Workspace).CreateFileAsync("created.txt", "one\r\ntwo\r\n");
+        var created = await new FileOperationsService(sandbox.Workspace).CreateFileAsync("created.txt", "one\r\ntwo\r\n");
         var bytes = await File.ReadAllBytesAsync(Path.Combine(sandbox.Workspace, "created.txt"));
         Assert.Equal(new UTF8Encoding(false, true).GetBytes("one\r\ntwo\r\n"), bytes);
         var hash = FileTextHelper.ComputeContentHashes("one\ntwo\n").Sha256;
         Assert.Equal(hash, created.Sha256);
-        Assert.Equal(hash, (await new FileService(sandbox.Workspace).ReadFileAsync("created.txt", new())).Sha256);
+        Assert.Equal(hash, (await new FileOperationsService(sandbox.Workspace).ReadFileAsync("created.txt", new())).Sha256);
     }
 
     [Fact, Trait("Status", "Baseline")]
@@ -223,7 +223,7 @@ public sealed class TextEncodingTests
         var encoding = EncodingFor("utf16le");
         var path = sandbox.Write("file.txt", "old\r\nkeep\r\n", encoding);
         var original = await File.ReadAllBytesAsync(path);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await Assert.ThrowsAsync<EncoderFallbackException>(() => files.ReplaceInFileAsync("file.txt", "old", "\uD800", read.Sha256));
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
@@ -237,7 +237,7 @@ public sealed class TextEncodingTests
         var binary = sandbox.Write("binary.txt", "");
         byte[] original = [0x41, 0x00, 0x42];
         await File.WriteAllBytesAsync(binary, original);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var error = await Assert.ThrowsAsync<MutationException>(() => files.ReadFileAsync("binary.txt", new()));
         Assert.Equal("binary_file", error.Code);
         Assert.Equal(original, await File.ReadAllBytesAsync(binary));

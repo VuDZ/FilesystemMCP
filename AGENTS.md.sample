@@ -7,7 +7,7 @@ Every time you start a new conversation, you MUST call the MCP server to list av
 ## 1. The Native Tool Ban (Strict Hijacking)
 You are operating in a protected environment. You have your own built-in tools for file reading, searching, and editing (e.g., native `read_file`, `edit_file`, `grep`, `bash`). **YOU MUST NOT USE THEM.**
 - Native IDE tools bypass our safety constraints and optimistic locking.
-- You MUST ONLY use the file operation tools provided by the MCP server (`read_file`, `replace_in_file`, `search`, `list_directory`, `create_file`, `append_to_file`).
+- You MUST ONLY use the file operation tools provided by the MCP server (`read_file`, `replace_in_file`, `search`, `list_directory`, `create_file`). Call them through MCP `tools/call`, not as custom JSON-RPC methods.
 - NEVER use raw terminal shells (`Bash`, `PowerShell`, `CMD`) to search or manipulate files.
 
 ## 2. The Safe Editing Protocol (Optimistic Locking)
@@ -34,8 +34,7 @@ Do not hallucinate file paths or assume standard architectures.
 
 ## 5. Strict Tool Responsibilities
 - **New Files:** Use `create_file` ONLY when the file does not exist. If the file exists, it will throw an error.
-- **Modifying Files:** Use `replace_in_file`.
-- **Adding at the End:** If you only need to append a new method to the bottom of a file, use `append_to_file`. This is safer and costs fewer tokens than replacing snippets.
+- **Modifying Files:** Use `replace_in_file`, including when the new text belongs at the end of the file. Read the file first and replace a real tail snippet.
 
 ## 6. The Workspace Jail
 All tools provided by this MCP operate inside a strict Workspace Jail.

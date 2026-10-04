@@ -37,7 +37,7 @@ public sealed class FileLocksTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "readable");
         using var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        Assert.Equal("readable", (await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new())).Text);
+        Assert.Equal("readable", (await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new())).Text);
     }
 
     [WindowsFact, Trait("Status", "Baseline")]
@@ -59,7 +59,7 @@ public sealed class FileLocksTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "original");
         using var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var error = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReplaceInFileAsync(
+        var error = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReplaceInFileAsync(
             "file.txt", "original", "changed", FileTextHelper.ComputeContentHashes("original").Sha256));
         Assert.Equal("file_locked", error.Code);
         Assert.Equal("original", await File.ReadAllTextAsync(path));
@@ -79,7 +79,7 @@ public sealed class FileLocksTests
     public async Task ReadDisappearedFileReturnsFileNotFound()
     {
         using var sandbox = new Sandbox();
-        var error = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReadFileAsync("gone.txt", new()));
+        var error = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReadFileAsync("gone.txt", new()));
         Assert.Equal("file_not_found", error.Code);
     }
 
@@ -116,7 +116,7 @@ public sealed class FileLocksTests
         try
         {
             var readError = await Assert.ThrowsAsync<MutationException>(
-                () => new FileService(sandbox.Workspace).ReadFileAsync("denied.txt", new()));
+                () => new FileOperationsService(sandbox.Workspace).ReadFileAsync("denied.txt", new()));
             Assert.Equal("access_denied", readError.Code);
 
             var payload = ServerProcess.JsonDocumentParse(await new SearchTool(new PathPolicy(sandbox.Workspace)).ExecuteAsync(
@@ -171,7 +171,7 @@ public sealed class FileLocksTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "content");
         var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         // Deterministic: release the foreign handle on the first backoff instead of sleeping.
         service.BeforeReadRetry = _ => held.Dispose();
         try
@@ -192,7 +192,7 @@ public sealed class FileLocksTests
         var path = sandbox.Write("file.txt", "content");
         using var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         using var cancellation = new CancellationTokenSource();
-        var service = new FileService(sandbox.Workspace) { BeforeReadRetry = _ => cancellation.Cancel() };
+        var service = new FileOperationsService(sandbox.Workspace) { BeforeReadRetry = _ => cancellation.Cancel() };
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => service.ReadFileAsync("file.txt", new(), cancellation.Token));
     }

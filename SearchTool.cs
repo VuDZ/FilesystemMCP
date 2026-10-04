@@ -114,10 +114,7 @@ internal sealed class SearchTool : IMcpTool
 
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new ArgumentException("Arguments must be a JSON object.");
-        }
+        ToolArguments.RejectUnknownProperties(arguments, "regex", "file_mask");
 
         if (!arguments.TryGetProperty("regex", out var regexNode)
             || regexNode.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined

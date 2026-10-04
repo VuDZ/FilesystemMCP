@@ -121,11 +121,11 @@ public sealed class ResourceBudgetsTests
         var isFullFileRead = startLine is null && endLine is null;
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonical);
         var (expectedText, expectedLines) = FileTextHelper.ExtractRequestedContent(
-            canonical, startLine, endLine, FileService.AbsoluteMaxLines, isFullFileRead);
+            canonical, startLine, endLine, FileOperationsService.AbsoluteMaxLines, isFullFileRead);
 
         // One byte per read: the signature, the line breaks and a CRLF pair are forced
         // across chunk boundaries.
-        var read = await new FileService(sandbox.Workspace)
+        var read = await new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ => new GeneratedStream(bytes, seekable: true, chunkLimit: 1)
         }.ReadFileAsync("file.txt", new(StartLine: startLine, EndLine: endLine));
@@ -142,7 +142,7 @@ public sealed class ResourceBudgetsTests
             ResourceBudget.Default,
             default,
             _ => new GeneratedStream(bytes, seekable: true, chunkLimit: 1),
-            maxLines: isFullFileRead ? FileService.AbsoluteMaxLines : null);
+            maxLines: isFullFileRead ? FileOperationsService.AbsoluteMaxLines : null);
 
         Assert.Equal(expectedText, scanned.Text);
         Assert.Equal(expectedLines, scanned.TotalLines);
@@ -162,7 +162,7 @@ public sealed class ResourceBudgetsTests
         Assert.Equal("a\nb\n", expectedText);
         Assert.Equal(4, expectedLines);
 
-        var read = await new FileService(sandbox.Workspace)
+        var read = await new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ => new GeneratedStream(bytes, seekable: true, chunkLimit: 2)
         }.ReadFileAsync("file.txt", new(AllowLargeRead: true, MaxLines: 2));
@@ -188,7 +188,7 @@ public sealed class ResourceBudgetsTests
         Assert.Equal(canonical, await FileTextHelper.ReadCanonicalContentAsync(path));
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonical);
         var (_, expectedLines) = FileTextHelper.ExtractRequestedContent(
-            canonical, null, null, FileService.AbsoluteMaxLines, isFullFileRead: true);
+            canonical, null, null, FileOperationsService.AbsoluteMaxLines, isFullFileRead: true);
 
         // 1 and 3 byte reads split every BOM; 4096 is the production chunk.
         foreach (var chunk in new[] { 1, 3, 4096 })
@@ -196,7 +196,7 @@ public sealed class ResourceBudgetsTests
             var full = await FileContentReader.ReadCanonicalAsync(
                 path, null, null, true, ResourceBudget.Default, default,
                 _ => new GeneratedStream(bytes, seekable: true, chunkLimit: chunk),
-                maxLines: FileService.AbsoluteMaxLines);
+                maxLines: FileOperationsService.AbsoluteMaxLines);
             Assert.Equal(canonical, full.Text);
             Assert.Equal(md5, full.Md5);
             Assert.Equal(sha256, full.Sha256);
@@ -213,7 +213,7 @@ public sealed class ResourceBudgetsTests
         }
 
         // The product entry point reads the same bytes through the seam.
-        var read = await new FileService(sandbox.Workspace)
+        var read = await new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ => new GeneratedStream(bytes, seekable: true, chunkLimit: 1)
         }.ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 3));
@@ -254,7 +254,7 @@ public sealed class ResourceBudgetsTests
         await File.WriteAllBytesAsync(path, payload);
 
         var fileError = await Assert.ThrowsAsync<MutationException>(
-            () => new FileService(sandbox.Workspace).ReadFileAsync("broken.txt", new()));
+            () => new FileOperationsService(sandbox.Workspace).ReadFileAsync("broken.txt", new()));
         Assert.Equal("unsupported_encoding", fileError.Code);
 
         // The incomplete trailing sequence must fail at the final decoder flush, not be
@@ -278,7 +278,7 @@ public sealed class ResourceBudgetsTests
         var binaryPath = sandbox.Write("binary.txt", "");
         await File.WriteAllBytesAsync(binaryPath, original);
         var fileError = await Assert.ThrowsAsync<MutationException>(
-            () => new FileService(sandbox.Workspace).ReadFileAsync("binary.txt", new()));
+            () => new FileOperationsService(sandbox.Workspace).ReadFileAsync("binary.txt", new()));
         Assert.Equal("binary_file", fileError.Code);
         var streamError = await Assert.ThrowsAsync<MutationException>(() => FileContentReader.ReadCanonicalAsync(
             binaryPath, null, null, true, ResourceBudget.Default, default,
@@ -288,12 +288,12 @@ public sealed class ResourceBudgetsTests
         // A NUL inside a BOM-prefixed document is text: UTF-16/UTF-32 use NUL bytes for
         // every other byte of an ASCII character.
         var utf16Path = sandbox.Write("utf16.txt", "A\0B", new UnicodeEncoding(false, true, true));
-        var utf16 = await new FileService(sandbox.Workspace).ReadFileAsync("utf16.txt", new());
+        var utf16 = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("utf16.txt", new());
         Assert.Equal("A\0B", utf16.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes("A\0B").Sha256, utf16.Sha256);
 
         var utf32Path = sandbox.Write("utf32.txt", "A\0B", new UTF32Encoding(true, true, true));
-        Assert.Equal("A\0B", (await new FileService(sandbox.Workspace).ReadFileAsync("utf32.txt", new())).Text);
+        Assert.Equal("A\0B", (await new FileOperationsService(sandbox.Workspace).ReadFileAsync("utf32.txt", new())).Text);
     }
 
     // ---- FS-07 bounded streaming proof (generated fixtures) -----------------------------
@@ -307,7 +307,7 @@ public sealed class ResourceBudgetsTests
 
         // A stream that reports its length is refused before one byte is read.
         var reported = new GeneratedStream(sixtyFourMiB, "a\n", seekable: true);
-        var seekableError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+        var seekableError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => reported
@@ -321,7 +321,7 @@ public sealed class ResourceBudgetsTests
         // the budget is crossed: only a bounded prefix of the 64 MiB file is handed out,
         // and every buffer the reader asks for stays bounded.
         var counted = new GeneratedStream(sixtyFourMiB, "a\n", seekable: false);
-        var countedError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+        var countedError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => counted
@@ -339,7 +339,7 @@ public sealed class ResourceBudgetsTests
     {
         using var sandbox = new Sandbox();
         GeneratedStream? stream = null;
-        var service = new FileService(sandbox.Workspace)
+        var service = new FileOperationsService(sandbox.Workspace)
         {
             Budget = ResourceBudget.Default with { MaxLineChars = 1024 },
             OpenReadStreamForTests = _ => stream = new GeneratedStream(1024L * 1024, "a", seekable: false)
@@ -378,7 +378,7 @@ public sealed class ResourceBudgetsTests
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(canonical);
 
         GeneratedStream? stream = null;
-        var read = await new FileService(sandbox.Workspace)
+        var read = await new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ => stream = new GeneratedStream(length, "line\n", seekable: false)
         }.ReadFileAsync("file.txt", new(StartLine: 1, EndLine: 1));
@@ -442,7 +442,7 @@ public sealed class ResourceBudgetsTests
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
         var opened = 0;
-        var service = new FileService(sandbox.Workspace)
+        var service = new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ =>
             {
@@ -465,7 +465,7 @@ public sealed class ResourceBudgetsTests
         // The stream hands out its first bytes and cancels the token in the same call, so
         // the cancellation is only observable if the reader checks the token itself.
         using var cancellation = new CancellationTokenSource();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new FileService(sandbox.Workspace)
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new FileOperationsService(sandbox.Workspace)
         {
             OpenReadStreamForTests = _ => new GeneratedStream(bytes, seekable: true, onRead: () => cancellation.Cancel())
         }.ReadFileAsync("file.txt", new(), cancellation.Token));
@@ -502,12 +502,12 @@ public sealed class ResourceBudgetsTests
         var pattern = new string('a', lineChars) + "\n";
         var fileBytes = (long)pattern.Length * lineCount;
         // maxLineChars is one line exactly, maxFileBytes (64 MiB) is far above 4 MiB, so the
-        // response budget is the only bound that can refuse this read. FileService passes it
+        // response budget is the only bound that can refuse this read. FileOperationsService passes it
         // to the reader as textLimit = max(maxLineChars + 1, maxResponseChars) = 16384.
         var budget = ResourceBudget.Default with { MaxLineChars = lineChars, MaxResponseChars = responseBudget };
 
         GeneratedStream? stream = null;
-        var service = new FileService(sandbox.Workspace)
+        var service = new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => stream = new GeneratedStream(fileBytes, pattern, seekable: false)
@@ -570,7 +570,7 @@ public sealed class ResourceBudgetsTests
         foreach (var options in raisedLineCap)
         {
             GeneratedStream? large = null;
-            var largeError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+            var largeError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
             {
                 Budget = budget,
                 OpenReadStreamForTests = _ => large = new GeneratedStream(fileBytes, pattern, seekable: false)
@@ -585,7 +585,7 @@ public sealed class ResourceBudgetsTests
         // A selected range inside the bound is materialized, while the hashes still cover
         // the whole file: the refusals above are the text bound, not an unreadable fixture.
         GeneratedStream? ranged = null;
-        var range = await new FileService(sandbox.Workspace)
+        var range = await new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => ranged = new GeneratedStream(fileBytes, pattern, seekable: false)
@@ -597,7 +597,7 @@ public sealed class ResourceBudgetsTests
         // Control: the identical full-file read succeeds once the response budget is above
         // the text, so nothing but that budget refused it above.
         var control = new GeneratedStream(fileBytes, pattern, seekable: false);
-        var read = await new FileService(sandbox.Workspace)
+        var read = await new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget with { MaxResponseChars = 16 * 1024 * 1024 },
             OpenReadStreamForTests = _ => control
@@ -627,7 +627,7 @@ public sealed class ResourceBudgetsTests
         var budget = ResourceBudget.Default with { MaxLineChars = lineChars, MaxResponseChars = 256 };
 
         GeneratedStream? stream = null;
-        var error = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+        var error = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => stream = new GeneratedStream(fileBytes, pattern, seekable: false)

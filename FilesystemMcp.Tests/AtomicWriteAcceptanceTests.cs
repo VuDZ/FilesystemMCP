@@ -46,9 +46,9 @@ public sealed class AtomicWriteAcceptanceTests
     }
 
     [Theory]
-    [InlineData("FileService")]
-    [InlineData("MutationReplace")]
-    [InlineData("MutationCreate")]
+    [InlineData("OperationsReplace")]
+    [InlineData("CreateTool")]
+    [InlineData("OperationsCreate")]
     [InlineData("Native")]
     public async Task PreCancelledEntryPointsHaveNoFilesystemSideEffects(string entry)
     {
@@ -60,9 +60,9 @@ public sealed class AtomicWriteAcceptanceTests
         var hash = FileTextHelper.ComputeContentHashes("old\ntext").Sha256;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => entry switch
         {
-            "FileService" => new FileService(policy).ReplaceInFileAsync("file.txt", "old", "new", hash, cancelled.Token),
-            "MutationReplace" => new MutationService(policy).ReplaceInFileAsync("file.txt", "old", "new", hash, cancelled.Token),
-            "MutationCreate" => new MutationService(policy).CreateFileAsync("absent/new/file.txt", "new", cancelled.Token),
+            "OperationsReplace" => new FileOperationsService(policy).ReplaceInFileAsync("file.txt", "old", "new", hash, cancelled.Token),
+            "CreateTool" => new CreateFileTool(policy).ExecuteAsync(ServerProcess.Arguments(new { path = "absent/tool.txt", content = "new" }), cancelled.Token),
+            "OperationsCreate" => new FileOperationsService(policy).CreateFileAsync("absent/new/file.txt", "new", cancelled.Token),
             _ => NativePath.WriteAsync(policy, "absent/new/file.txt", Path.Combine(sandbox.Workspace, "absent/new/file.txt"), "new", true, cancelled.Token)
         });
         Assert.Equal(original, File.ReadAllBytes(path));
@@ -75,7 +75,7 @@ public sealed class AtomicWriteAcceptanceTests
     {
         using var sandbox = new Sandbox(); using var cancelled = new CancellationTokenSource();
         var policy = new PathPolicy(sandbox.Workspace) { BeforeWriteCommit = cancelled.Cancel };
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new MutationService(policy).CreateFileAsync("absent/new.txt", "created", cancelled.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new FileOperationsService(policy).CreateFileAsync("absent/new.txt", "created", cancelled.Token));
         Assert.False(Directory.Exists(Path.Combine(sandbox.Workspace, "absent")));
         Assert.Empty(Directory.GetFiles(sandbox.Workspace));
     }
@@ -153,9 +153,9 @@ public sealed class AtomicWriteAcceptanceTests
     public async Task LeadingBomCreateAndReplacementHashMatchSubsequentRead()
     {
         using var sandbox = new Sandbox();
-        var mutation = new MutationService(sandbox.Workspace);
+        var mutation = new FileOperationsService(sandbox.Workspace);
         var created = await mutation.CreateFileAsync("created.txt", "\ufeffcreated\r\n");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("created.txt", new());
         Assert.Equal(FileTextHelper.ComputeContentHashes("created\n").Sha256, created.Sha256);
         Assert.Equal(created.Sha256, read.Sha256);
@@ -253,7 +253,7 @@ public sealed class AtomicWriteAcceptanceTests
         };
         var path = sandbox.Write("file.txt", "prefix\r\nold\rother\nsuffix\r\n", encoding);
         var hash = FileTextHelper.ComputeContentHashes("prefix\nold\nother\nsuffix\n").Sha256;
-        var result = await new FileService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "old\nother", "new\nline", hash);
+        var result = await new FileOperationsService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "old\nother", "new\nline", hash);
         var expectedText = "prefix\r\nnew\rline\nsuffix\r\n";
         Assert.Equal(encoding.GetPreamble().Concat(encoding.GetBytes(expectedText)).ToArray(), File.ReadAllBytes(path));
         Assert.Equal(FileTextHelper.ComputeContentHashes(FileTextHelper.NormalizeLineEndings(expectedText)).Sha256, result.NewHash);
@@ -330,7 +330,7 @@ public sealed class AtomicWriteAcceptanceTests
         await Replace(new PathPolicy(sandbox.Workspace), "new");
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead, File.GetUnixFileMode(path));
         File.SetUnixFileMode(path, UnixFileMode.UserRead);
-        var error = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "new", "again",
+        var error = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "new", "again",
             FileTextHelper.ComputeContentHashes("new\ntext").Sha256));
         Assert.Equal("access_denied", error.Code);
         Assert.Equal(UnixFileMode.UserRead, File.GetUnixFileMode(path));
@@ -377,7 +377,7 @@ public sealed class AtomicWriteAcceptanceTests
         Assert.True(ready.Wait(TimeSpan.FromSeconds(5)));
         try
         {
-            await new FileService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "old", "new", FileTextHelper.ComputeContentHashes(FileTextHelper.NormalizeLineEndings(old)).Sha256);
+            await new FileOperationsService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "old", "new", FileTextHelper.ComputeContentHashes(FileTextHelper.NormalizeLineEndings(old)).Sha256);
         }
         finally { finished.Set(); await observer.WaitAsync(TimeSpan.FromSeconds(5)); }
         samples.Add(File.ReadAllText(path));
@@ -473,8 +473,8 @@ public sealed class AtomicWriteAcceptanceTests
 
     private static PathPolicy Policy(Sandbox sandbox, Action<AtomicWritePoint> hook) => new(sandbox.Workspace)
     { AtomicWrites = new AtomicWriteDependencies { Hook = hook } };
-    private static Task<(string NewText, string NewHash, int ReplaceIndex)> Replace(PathPolicy policy, string next, CancellationToken token = default) =>
-        new FileService(policy).ReplaceInFileAsync("file.txt", "old", next, FileTextHelper.ComputeContentHashes("old\ntext").Sha256, token);
+    private static Task<(string Path, string NewText, string Md5, string NewHash, int ReplaceIndex)> Replace(PathPolicy policy, string next, CancellationToken token = default) =>
+        new FileOperationsService(policy).ReplaceInFileAsync("file.txt", "old", next, FileTextHelper.ComputeContentHashes("old\ntext").Sha256, token);
     private static string[] Temps(Sandbox sandbox) => Directory.GetFiles(sandbox.Workspace, ".filesystemmcp-*.tmp");
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateHardLinkW", SetLastError = true)]

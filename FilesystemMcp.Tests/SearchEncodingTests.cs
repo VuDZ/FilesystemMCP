@@ -25,7 +25,7 @@ public sealed class SearchEncodingTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("файл.txt", "first\r\nneedle Привет\r\n", TextEncodingTests.EncodingFor(encoding));
-        var read = await new FileService(sandbox.Workspace).ReadFileAsync("файл.txt", new());
+        var read = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("файл.txt", new());
         Assert.Contains("needle Привет", read.Text);
         var raw = await new SearchTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default);
         var payload = ServerProcess.JsonDocumentParse(raw);
@@ -49,7 +49,7 @@ public sealed class SearchEncodingTests
         sandbox.Write("endings.txt", stored, TextEncodingTests.EncodingFor(encoding));
         // read_file splits on CRLF, LF and lone CR; line 2 must be the very line search
         // reports, so both tools agree on the numbering of the same stored bytes.
-        var range = await new FileService(sandbox.Workspace).ReadFileAsync("endings.txt", new(StartLine: 2, EndLine: 2));
+        var range = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("endings.txt", new(StartLine: 2, EndLine: 2));
         // FS-10: the selected line keeps the delimiter that closed it in the source.
         Assert.Equal("needle Привет\n", range.Text);
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(sandbox.Workspace).ExecuteAsync(
@@ -66,7 +66,7 @@ public sealed class SearchEncodingTests
         using var sandbox = new Sandbox();
         var path = sandbox.Write("bom.txt", "");
         await File.WriteAllBytesAsync(path, TextEncodingTests.EncodingFor(encoding).GetPreamble());
-        Assert.Equal("", (await new FileService(sandbox.Workspace).ReadFileAsync("bom.txt", new())).Text);
+        Assert.Equal("", (await new FileOperationsService(sandbox.Workspace).ReadFileAsync("bom.txt", new())).Text);
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(sandbox.Workspace).ExecuteAsync(
             ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
         // A BOM-only payload decodes to zero lines: an empty, complete answer — not a
@@ -91,7 +91,7 @@ public sealed class SearchEncodingTests
             : [.. Encoding.UTF8.GetBytes("needle before the late NUL\r\n" + new string('a', 700) + "\r\n"), 0x00];
         await File.WriteAllBytesAsync(binary, stored);
 
-        var readError = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReadFileAsync("binary.txt", new()));
+        var readError = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReadFileAsync("binary.txt", new()));
         Assert.Equal("binary_file", readError.Code);
 
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(sandbox.Workspace).ExecuteAsync(
@@ -127,7 +127,7 @@ public sealed class SearchEncodingTests
         }
 
         await File.WriteAllBytesAsync(broken, stored);
-        var readError = await Assert.ThrowsAsync<MutationException>(() => new FileService(sandbox.Workspace).ReadFileAsync("broken.txt", new()));
+        var readError = await Assert.ThrowsAsync<MutationException>(() => new FileOperationsService(sandbox.Workspace).ReadFileAsync("broken.txt", new()));
         Assert.Equal("unsupported_encoding", readError.Code);
 
         var payload = ServerProcess.JsonDocumentParse(await new SearchTool(sandbox.Workspace).ExecuteAsync(
@@ -214,12 +214,12 @@ public sealed class SearchEncodingTests
 
             if (testCase.ReadCode is null)
             {
-                await new FileService(sandbox.Workspace).ReadFileAsync(testCase.Name, new());
+                await new FileOperationsService(sandbox.Workspace).ReadFileAsync(testCase.Name, new());
             }
             else
             {
                 var readError = await Assert.ThrowsAsync<MutationException>(
-                    () => new FileService(sandbox.Workspace).ReadFileAsync(testCase.Name, new()));
+                    () => new FileOperationsService(sandbox.Workspace).ReadFileAsync(testCase.Name, new()));
                 Assert.Equal(testCase.ReadCode, readError.Code);
             }
 

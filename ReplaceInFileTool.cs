@@ -9,11 +9,16 @@ internal sealed class ReplaceInFileTool : IMcpTool
 {
   "type": "object",
   "additionalProperties": false,
+  "anyOf": [
+    { "required": ["path"] },
+    { "required": ["filePath"] },
+    { "required": ["file_path"] }
+  ],
   "required": ["target_snippet", "replacement_snippet", "original_hash"],
   "properties": {
-    "path": { "type": "string", "minLength": 1 },
-    "filePath": { "type": "string", "minLength": 1, "description": "Alias for path." },
-    "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." },
+    "path": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "filePath": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Alias for path." },
+    "file_path": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Alias for path." },
     "target_snippet": { "type": "string", "minLength": 1 },
     "replacement_snippet": { "type": "string" },
     "original_hash": { "type": "string", "minLength": 1, "pattern": "\\S" }
@@ -21,27 +26,30 @@ internal sealed class ReplaceInFileTool : IMcpTool
 }
 """;
 
-    private readonly FileService _fileService;
+    private readonly FileOperationsService _operations;
 
-    public ReplaceInFileTool(FileService fileService)
+    public ReplaceInFileTool(FileOperationsService operations)
     {
-        _fileService = fileService ?? throw new ArgumentNullException(nameof(fileService));
+        _operations = operations ?? throw new ArgumentNullException(nameof(operations));
     }
 
     public string Name => "replace_in_file";
     public string Description =>
-        "Replaces a specific snippet of code in a file. Path argument: path, filePath, or file_path (one required). "
+        "Replaces a specific snippet of code in a file. Path argument: path, filePath, or file_path (at least one; when more than one is set they must be equal). "
         + "CRITICAL: You MUST provide the 'original_hash' exactly as returned by your last 'read_file' call. "
         + "If you do not have the current hash, you MUST call 'read_file' first to get it.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new ArgumentException("Arguments must be a JSON object.");
-        }
-
+        ToolArguments.RejectUnknownProperties(
+            arguments,
+            "path",
+            "filePath",
+            "file_path",
+            "target_snippet",
+            "replacement_snippet",
+            "original_hash");
         var path = ToolArguments.GetRequiredPath(arguments);
         // FS-11 (1.11.0): the three text arguments have three different empty rules.
         // replacement_snippet accepts "" and any whitespace (deletion); target_snippet is
@@ -51,14 +59,14 @@ internal sealed class ReplaceInFileTool : IMcpTool
         // replacement_snippet and target_snippet are plain "type":"string" (+ minLength 1
         // for the target), while original_hash additionally carries pattern "\S". The
         // asymmetry is deliberate: a whitespace-only target matches literally, a
-        // whitespace-only hash can never match any digest. path keeps the general
-        // ToolArguments contract, and additionalProperties is declared but not enforced at
-        // runtime (inherited FS-05 behaviour).
+        // whitespace-only hash can never match any digest. Path aliases are a different
+        // rule: a whitespace-only path is not a path (PathPolicy), so their schema is
+        // minLength 1 plus pattern "\S", and ToolArguments rejects that set before any write.
         var targetSnippet = GetRequiredString(arguments, "target_snippet", RequiredText.NonEmpty);
         var replacementSnippet = GetRequiredString(arguments, "replacement_snippet", RequiredText.Any);
         var originalHash = GetRequiredString(arguments, "original_hash", RequiredText.NonWhitespace);
 
-        var (newText, newHash, replaceIndex) = await _fileService.ReplaceInFileAsync(
+        var (resolvedPath, newText, md5, newHash, replaceIndex) = await _operations.ReplaceInFileAsync(
             path,
             targetSnippet,
             replacementSnippet,
@@ -67,6 +75,9 @@ internal sealed class ReplaceInFileTool : IMcpTool
 
         var result = new ReplaceInFileToolResult(
             Status: "success",
+            Path: resolvedPath,
+            Md5: md5,
+            Sha256: newHash,
             NewHash: newHash,
             Snippet: BuildSnippet(newText, replaceIndex));
 

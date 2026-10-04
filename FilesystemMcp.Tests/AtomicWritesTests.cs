@@ -23,7 +23,7 @@ public sealed class AtomicWritesTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "old");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         var read = await files.ReadFileAsync("file.txt", new());
         await File.WriteAllTextAsync(path, "external", Sandbox.Utf8);
         var error = await Assert.ThrowsAsync<MutationException>(() => files.ReplaceInFileAsync("file.txt", "old", "new", read.Sha256));

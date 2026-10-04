@@ -25,7 +25,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new());
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new());
         Assert.Equal(content, reply.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes(content).Sha256, reply.Sha256);
         Assert.False(reply.Truncated);
@@ -43,7 +43,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", stored);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new());
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new());
         Assert.Equal(expectedText, reply.Text);
         Assert.Equal(totalLines, reply.TotalLines);
         Assert.Equal(1, reply.StartLine);
@@ -57,7 +57,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("empty.txt", "");
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("empty.txt", new());
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("empty.txt", new());
         Assert.Equal("", reply.Text);
         Assert.Equal(0, reply.TotalLines);
         Assert.Null(reply.StartLine);
@@ -84,7 +84,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         const string stored = "a\r\nb\r\nc";
         sandbox.Write("file.txt", stored);
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
 
         var full = await files.ReadFileAsync("file.txt", new());
         Assert.Equal("a\nb\nc", full.Text);
@@ -112,7 +112,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync(
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync(
             "file.txt", new(StartLine: startLine, EndLine: endLine));
         Assert.Equal(expectedText, reply.Text);
         Assert.Equal(startLine, reply.StartLine);
@@ -126,7 +126,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", "first\n\nthird\nlast");
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 3));
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 3));
         Assert.Equal("\nthird\n", reply.Text);
         Assert.Equal(2, reply.StartLine);
         Assert.Equal(3, reply.EndLine);
@@ -141,7 +141,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         const string content = "a\nb\nc\nd";
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 5, EndLine: 9));
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 5, EndLine: 9));
         Assert.Equal("", reply.Text);
         Assert.Equal(4, reply.TotalLines);
         Assert.Null(reply.StartLine);
@@ -158,7 +158,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         const string content = "first\n\nthird\nlast"; // no terminal LF
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 9));
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 9));
         Assert.Equal("\nthird\nlast", reply.Text);
         Assert.Equal(2, reply.StartLine);
         Assert.Equal(4, reply.EndLine); // clamped, and the metadata reports the actual range
@@ -172,7 +172,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         const string content = "a\r\nb\r\nc";
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 2));
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: 2, EndLine: 2));
         Assert.Equal(FileTextHelper.ComputeContentHashes("a\nb\nc").Sha256, reply.Sha256);
     }
 
@@ -202,7 +202,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         const string content = "a\nb\nc";
         sandbox.Write("file.txt", content);
-        var reply = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(AllowLargeRead: true, MaxLines: 3));
+        var reply = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(AllowLargeRead: true, MaxLines: 3));
         Assert.Equal("a\nb\nc", reply.Text);
         Assert.Equal(3, reply.TotalLines);
         Assert.False(reply.Truncated);
@@ -212,8 +212,8 @@ public sealed class ReadFidelityTests
     // ---- default cap: exact cap / cap+1 -------------------------------------------------------
 
     [Theory, Trait("Status", "Baseline")]
-    [InlineData(FileService.DefaultMaxLines, true)]     // exactly at the cap: delivered whole
-    [InlineData(FileService.DefaultMaxLines + 1, false)] // one line over: explicit refusal
+    [InlineData(FileOperationsService.DefaultMaxLines, true)]     // exactly at the cap: delivered whole
+    [InlineData(FileOperationsService.DefaultMaxLines + 1, false)] // one line over: explicit refusal
     public async Task FullReadAtAndOverTheDefaultCap(int lineCount, bool shouldSucceed)
     {
         using var sandbox = new Sandbox();
@@ -242,7 +242,7 @@ public sealed class ReadFidelityTests
     public async Task RangeWiderThanTheDefaultCapIsRefusedWhileTheExactCapIsDelivered()
     {
         using var sandbox = new Sandbox();
-        var lineCount = FileService.DefaultMaxLines + 1;
+        var lineCount = FileOperationsService.DefaultMaxLines + 1;
         sandbox.Write("file.txt", Lines(lineCount));
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
 
@@ -274,7 +274,7 @@ public sealed class ReadFidelityTests
         sandbox.Write("file.txt", "a\nb\nc\nd");
         // The service refuses the combination instead of silently ignoring max_lines.
         await Assert.ThrowsAnyAsync<ArgumentException>(() =>
-            new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(MaxLines: 2)));
+            new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(MaxLines: 2)));
 
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
         McpAssert.ProtocolError(
@@ -298,7 +298,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", "a\nb\nc");
         await Assert.ThrowsAnyAsync<ArgumentException>(() =>
-            new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: startLine, EndLine: endLine)));
+            new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new(StartLine: startLine, EndLine: endLine)));
 
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
         McpAssert.ProtocolError(
@@ -311,7 +311,7 @@ public sealed class ReadFidelityTests
     {
         using var sandbox = new Sandbox();
         sandbox.Write("file.txt", "a\nb\nc");
-        var files = new FileService(sandbox.Workspace);
+        var files = new FileOperationsService(sandbox.Workspace);
         await Assert.ThrowsAnyAsync<ArgumentException>(() => files.ReadFileAsync("file.txt", new(StartLine: 2)));
         await Assert.ThrowsAnyAsync<ArgumentException>(() => files.ReadFileAsync("file.txt", new(EndLine: 2)));
 
@@ -345,7 +345,7 @@ public sealed class ReadFidelityTests
         using var sandbox = new Sandbox();
         var line = new string('a', 150);
         sandbox.Write("file.txt", line + "\n" + line + "\n");
-        var service = new FileService(sandbox.Workspace)
+        var service = new FileOperationsService(sandbox.Workspace)
         {
             Budget = ResourceBudget.Default with { MaxResponseChars = 200 }
         };
@@ -404,7 +404,7 @@ public sealed class ReadFidelityTests
 
         // Range form: line 1 is selected, the refusal fires on its closing LF.
         PatternStream? ranged = null;
-        var rangeError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+        var rangeError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => ranged = new PatternStream(fileBytes, pattern)
@@ -418,7 +418,7 @@ public sealed class ReadFidelityTests
 
         // Prefix form (allow_large_read + max_lines): the same refusal on the same line.
         PatternStream? capped = null;
-        var capError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileService(sandbox.Workspace)
+        var capError = await Assert.ThrowsAsync<ResourceLimitException>(() => new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget,
             OpenReadStreamForTests = _ => capped = new PatternStream(fileBytes, pattern)
@@ -433,7 +433,7 @@ public sealed class ReadFidelityTests
         // Control: one more char of budget admits the closing LF, and the identical
         // selection is delivered with text length exactly lineChars + 1.
         var control = new PatternStream(fileBytes, pattern);
-        var fitting = await new FileService(sandbox.Workspace)
+        var fitting = await new FileOperationsService(sandbox.Workspace)
         {
             Budget = budget with { MaxResponseChars = lineChars + 1 },
             OpenReadStreamForTests = _ => control

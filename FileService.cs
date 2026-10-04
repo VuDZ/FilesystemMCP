@@ -2,7 +2,7 @@ using System.Text;
 
 namespace FilesystemMcp;
 
-internal sealed class FileService
+internal sealed class FileOperationsService
 {
     public const int DefaultMaxLines = 1000;
     public const int AbsoluteMaxLines = 50_000;
@@ -27,9 +27,19 @@ internal sealed class FileService
     /// </summary>
     internal Func<string, Stream>? OpenReadStreamForTests { get; set; }
 
-    public FileService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
+    public FileOperationsService(string workspaceRoot) : this(new PathPolicy(workspaceRoot)) { }
 
-    public FileService(PathPolicy policy) => _policy = policy;
+    public FileOperationsService(PathPolicy policy) => _policy = policy;
+
+    public async Task<CreateFileResult> CreateFileAsync(
+        string path,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await TranslateAsync(() =>
+            AtomicFileWriter.WriteTextAsync(_policy, path, content, true, cancellationToken));
+        return new CreateFileResult(result.Path, result.Md5, result.Sha256);
+    }
 
     public async Task<ReadFileResult> ReadFileAsync(
         string path,
@@ -137,7 +147,7 @@ internal sealed class FileService
 
     // FS-11 (1.11.0): ReplaceIndex is the canonical (LF-normalized) offset of the first exact
     // match that was replaced. It lets the tool anchor its response snippet on the edit itself.
-    public async Task<(string NewText, string NewHash, int ReplaceIndex)> ReplaceInFileAsync(
+    public async Task<(string Path, string NewText, string Md5, string NewHash, int ReplaceIndex)> ReplaceInFileAsync(
         string path,
         string targetSnippet,
         string replacementSnippet,
@@ -159,11 +169,17 @@ internal sealed class FileService
             throw new ArgumentException("originalHash cannot be empty.", nameof(originalHash));
         }
 
+        var result = await TranslateAsync(() =>
+            AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken));
+        // Only a replace reports an edit position; a whole-text write has none.
+        return (result.Path, result.Text, result.Md5, result.Sha256, result.ReplaceIndex!.Value);
+    }
+
+    private static async Task<T> TranslateAsync<T>(Func<Task<T>> operation)
+    {
         try
         {
-            var result = await AtomicFileWriter.ReplaceAsync(_policy, path, targetSnippet, replacementSnippet, originalHash, cancellationToken);
-            // Only a replace reports an edit position; a whole-text write has none.
-            return (result.Text, result.Sha256, result.ReplaceIndex!.Value);
+            return await operation();
         }
         catch (Exception ex)
         {
@@ -181,6 +197,7 @@ internal sealed class FileService
             throw translated;
         }
     }
+
     /// <summary>
     /// The largest selected text this read may materialize, in UTF-16 code units. It is the
     /// response budget, because a larger payload could never be delivered: the transport

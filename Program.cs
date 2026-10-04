@@ -12,11 +12,6 @@ internal static class Program
     private const int InternalErrorCode = -32603;
     private const int ParseErrorCode = -32700;
     private const int InvalidRequestCode = -32600;
-    // Legacy direct RPC methods keep the accepted FS-01/FS-04 envelope: a JSON-RPC
-    // error whose message is the machine code. FS-12 removes those methods; routing
-    // their classification through ToolErrorMapper keeps the code set identical to
-    // tools/call without changing the accepted envelope. See docs/04-file-locks.md.
-    private const int LegacyOperationalErrorCode = -32001;
     private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
     private static readonly JsonElement EmptyPromptsList = ParseJsonElement("""{"prompts":[]}""");
     private static readonly JsonElement EmptyResourcesList = ParseJsonElement("""{"resources":[]}""");
@@ -49,20 +44,19 @@ internal static class Program
             return 1;
         }
 
-        var fileService = new FileService(policy) { Budget = options.Budget };
-        var mutationService = new MutationService(policy);
+        var operations = new FileOperationsService(policy) { Budget = options.Budget };
         var toolRegistry = new ToolRegistry();
         toolRegistry.Register(new ListDirectoryTool(policy, options.Budget));
         toolRegistry.Register(new SearchTool(policy, options.Budget));
-        toolRegistry.Register(new CreateFileTool(policy));
-        toolRegistry.Register(new ReadFileTool(fileService));
-        toolRegistry.Register(new ReplaceInFileTool(fileService));
+        toolRegistry.Register(new CreateFileTool(operations));
+        toolRegistry.Register(new ReadFileTool(operations));
+        toolRegistry.Register(new ReplaceInFileTool(operations));
 
         // FS-07: one reader, one writer lock. Tools execute off the read path, so ping
         // and notifications/cancelled stay responsive while a tool is running.
         var transport = new StdioTransport(options.Budget);
         transport.Configure((request, cancellationToken) => HandleAsync(
-            request, fileService, mutationService, policy, toolRegistry, limiter, options, transport, cancellationToken));
+            request, toolRegistry, limiter, options, cancellationToken));
         try
         {
             await transport.RunAsync();
@@ -84,13 +78,9 @@ internal static class Program
     /// </summary>
     private static async Task<JsonRpcResponse?> HandleAsync(
         JsonRpcRequest? request,
-        FileService fileService,
-        MutationService mutationService,
-        PathPolicy policy,
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
         ServerOptions options,
-        StdioTransport transport,
         CancellationToken sessionToken)
     {
         if (request is null)
@@ -148,7 +138,7 @@ internal static class Program
             // happens in a catch filter after the fact, so a captured bool would still hold
             // its dispatch-time value and a deadline that fired during the request would be
             // reported as a peer cancellation.
-            return await ProcessRequestAsync(request, fileService, mutationService, policy, toolRegistry, limiter, deadline.Token, () => sessionEnded, () => deadlineFired);
+            return await ProcessRequestAsync(request, toolRegistry, limiter, deadline.Token, () => sessionEnded, () => deadlineFired);
         }
         catch (OperationCanceledException) when (IsDeadlineExceeded(deadlineFired, sessionEnded))
         {
@@ -176,9 +166,6 @@ internal static class Program
 
     private static async Task<JsonRpcResponse?> ProcessRequestAsync(
         JsonRpcRequest? request,
-        FileService fileService,
-        MutationService mutationService,
-        PathPolicy policy,
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
         CancellationToken cancellationToken,
@@ -219,12 +206,6 @@ internal static class Program
                 "ping" => HandlePing(request.Id),
                 "tools/list" => HandleToolsList(toolRegistry, request.Id),
                 "tools/call" => await HandleToolsCallAsync(request, toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "read_file" => await HandleLegacyToolCallAsync(request, "read_file", toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "create_file" => await HandleLegacyToolCallAsync(request, "create_file", toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "replace_in_file" => await HandleLegacyToolCallAsync(request, "replace_in_file", toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "list_directory" => await HandleLegacyToolCallAsync(request, "list_directory", toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "search" => await HandleLegacyToolCallAsync(request, "search", toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
-                "append_to_file" => HandleAppendToFileStub(request, policy),
                 "prompts/list" => HandlePromptsList(request.Id),
                 "resources/list" => HandleResourcesList(request.Id),
                 _ => CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method)
@@ -238,17 +219,15 @@ internal static class Program
         }
         catch (Exception ex) when (ToolErrorMapper.TryMap(ex, requestedPath: null, out var operational))
         {
-            // Legacy direct RPC methods that do not render their own tool error, plus the
-            // last-resort clause for tools/call (which handles its own mapped failures).
-            // A fired deadline must be classified before the mapper, exactly as it is in
-            // HandleToolsCallAsync and HandleLegacyToolCallAsync: the mapper sees only an
-            // OperationCanceledException and cannot tell it apart from a peer cancel.
+            // Last resort for a mapped failure that escaped a tool. Direct RPC methods are
+            // gone (FS-12): there is no -32001 envelope. A fired deadline is a resource
+            // limit, not a peer cancel — the mapper cannot tell those apart.
             if (ToolErrorMapper.IsCancellation(ex) && IsDeadlineExceeded(deadlineFired(), sessionEnded()))
             {
                 return CreateToolErrorResponse(request.Id, ResourceLimitError());
             }
 
-            return CreateErrorResponse(request.Id, LegacyOperationalErrorCode, operational.Code);
+            return CreateToolErrorResponse(request.Id, operational);
         }
         catch (Exception ex)
         {
@@ -387,73 +366,6 @@ internal static class Program
     {
         try { McpLogger.Info("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception)); } catch { }
         return CreateErrorResponse(id, InvalidParamsCode, "Invalid arguments.");
-    }
-
-    /// <summary>
-    /// The historical direct RPC methods reuse the registered tool implementation
-    /// rather than a second, divergent code path, so their budgets, error codes and
-    /// cancellation behaviour cannot drift away from <c>tools/call</c>. FS-12 removes
-    /// them; until then the FS-01/FS-04 envelope (<c>-32001</c> with the code as the
-    /// message) is preserved.
-    /// </summary>
-    private static async Task<JsonRpcResponse> HandleLegacyToolCallAsync(
-        JsonRpcRequest request,
-        string toolName,
-        ToolRegistry toolRegistry,
-        ResourceLimiter limiter,
-        CancellationToken cancellationToken,
-        Func<bool> sessionEnded,
-        Func<bool> deadlineFired)
-    {
-        if (request.Params is not { } parameters || parameters.ValueKind is not JsonValueKind.Object)
-        {
-            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid " + toolName + " params.");
-        }
-
-        try
-        {
-            var toolResult = await toolRegistry.ExecuteToolAsync(toolName, parameters, limiter, cancellationToken);
-            using var document = JsonDocument.Parse(toolResult);
-            return CreateResultResponse(request.Id, document.RootElement.Clone());
-        }
-        catch (OperationCanceledException) when (IsDeadlineExceeded(deadlineFired(), sessionEnded()))
-        {
-            return CreateToolErrorResponse(request.Id, ResourceLimitError());
-        }
-        catch (Exception ex) when (ToolErrorMapper.TryMap(ex, requestedPath: null, out var error))
-        {
-            return CreateErrorResponse(request.Id, LegacyOperationalErrorCode, error.Code);
-        }
-    }
-
-    private static JsonRpcResponse HandleAppendToFileStub(JsonRpcRequest request, PathPolicy policy)
-    {
-        var parameters = DeserializeParams(request.Params, McpJsonContext.Default.AppendToFileParams);
-        if (parameters is null || !TryResolvePathParam(request.Params, out var path))
-        {
-            return CreateErrorResponse(request.Id, InvalidParamsCode, "Missing or invalid append_to_file params.");
-        }
-
-        var fullPath = policy.Resolve(path);
-        var result = new WriteResult(fullPath, "stub");
-        var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.WriteResult);
-        return CreateResultResponse(request.Id, payload);
-    }
-
-    private static bool TryResolvePathParam(JsonElement? paramsNode, out string path)
-    {
-        path = string.Empty;
-        if (paramsNode is null || paramsNode.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-        {
-            return false;
-        }
-
-        if (paramsNode.Value.ValueKind is not JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        return ToolArguments.TryGetPath(paramsNode.Value, out path);
     }
 
     private static TParams? DeserializeParams<TParams>(JsonElement? paramsNode, JsonTypeInfo<TParams> typeInfo)

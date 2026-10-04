@@ -14,7 +14,7 @@
 | B-08 | P2 | Hard-link policy / усиление path identity | Проверить inode/file identity, hard links наружу, rename roots и platform handle-based jail. Не заявлять полную sandbox гарантию до определённого threat model. |
 | B-09 | P2 | Явные legacy encodings | Opt-in encoding=windows-1251 и UTF-16 no BOM с сохранением bytes; strict validation, zero silent auto-detect, AOT support/codepages packaging. |
 | B-10 | P2 | Точность выбора patch | expected_match_count или position/anchor; исключить случайную правку первого совпадения при неоднозначном snippet. |
-| B-11 | P3 | Append tool | Решить необходимость; если нужен — original_hash, atomic mutation, shared budgets/error model, без legacy stub. |
+| B-11 | P3 | Append tool | FS-12 (1.13.0) не добавляет tool и удалил рекомендацию `append_to_file` из AGENTS.md.sample и README. Решить необходимость; если нужен — `original_hash`, atomic mutation, shared budgets/error model, только через `tools/call`, без legacy stub и без прямого RPC. |
 | B-12 | P3 | Официальный MCP SDK | Сравнить protocol maintenance с dependency/AOT cost; только после prototype trim/publish и parity suite. Не считать migration обязательным исправлением. |
 | B-13 | P3 | Structured output / tool annotations | outputSchema/structuredContent, readOnly/destructive hints, capabilities только для реально поддержанных версий; сохранить text JSON fallback. |
 | B-14 | P2 | Наблюдаемость и support bundle | Request/session ids, relative path, codes, sizes, skipped counts, metrics; opt-in sanitized bundle для реального Unicode/lock инцидента. Секреты не логируются. |

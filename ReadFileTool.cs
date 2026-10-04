@@ -8,10 +8,15 @@ internal sealed class ReadFileTool : IMcpTool
 {
   "type": "object",
   "additionalProperties": false,
+  "anyOf": [
+    { "required": ["path"] },
+    { "required": ["filePath"] },
+    { "required": ["file_path"] }
+  ],
   "properties": {
-    "path": { "type": "string", "minLength": 1 },
-    "filePath": { "type": "string", "minLength": 1, "description": "Alias for path." },
-    "file_path": { "type": "string", "minLength": 1, "description": "Alias for path." },
+    "path": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "filePath": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Alias for path." },
+    "file_path": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Alias for path." },
     "start_line": { "type": "integer", "minimum": 1 },
     "end_line": { "type": "integer", "minimum": 1 },
     "allow_large_read": {
@@ -29,11 +34,11 @@ internal sealed class ReadFileTool : IMcpTool
 }
 """;
 
-    private readonly FileService _fileService;
+    private readonly FileOperationsService _operations;
 
-    public ReadFileTool(FileService fileService)
+    public ReadFileTool(FileOperationsService operations)
     {
-        _fileService = fileService ?? throw new ArgumentNullException(nameof(fileService));
+        _operations = operations ?? throw new ArgumentNullException(nameof(operations));
     }
 
     public string Name => "read_file";
@@ -41,18 +46,15 @@ internal sealed class ReadFileTool : IMcpTool
         "Reads a text file (UTF-8 with or without BOM; UTF-16/UTF-32 LE/BE with BOM). Invalid encodings are rejected. Returns text and md5/sha256 hashes of the full normalized file. "
         + "The text keeps leading blank lines and the terminal newline, and includes the line delimiter after the last returned line when it existed in the file. "
         + "Metadata: total_lines (whole file), start_line/end_line (the range actually returned, absent for an empty selection), truncated (a line cap fired), has_more (lines exist after end_line). "
-        + "Path argument: path, filePath, or file_path (one required). "
+        + "Path argument: path, filePath, or file_path (at least one; when more than one is set they must be equal). "
         + "Default full-file limit is 1000 lines; set allow_large_read=true to read more (optionally with max_lines, which requires allow_large_read=true). "
         + "Always use before replace_in_file.";
     public string InputSchemaJson => Schema;
 
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new ArgumentException("Arguments must be a JSON object.");
-        }
-
+        ToolArguments.RejectUnknownProperties(
+            arguments, "path", "filePath", "file_path", "start_line", "end_line", "allow_large_read", "max_lines");
         var path = ToolArguments.GetRequiredPath(arguments);
 
         var options = new ReadFileOptions(
@@ -61,7 +63,7 @@ internal sealed class ReadFileTool : IMcpTool
             AllowLargeRead: ParseOptionalBool(arguments, "allow_large_read"),
             MaxLines: ParseOptionalInt(arguments, "max_lines"));
 
-        var result = await _fileService.ReadFileAsync(path, options, cancellationToken);
+        var result = await _operations.ReadFileAsync(path, options, cancellationToken);
         return JsonSerializer.Serialize(result, McpJsonContext.Default.ReadFileResult);
     }
 

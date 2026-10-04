@@ -9,7 +9,7 @@ public sealed class WorkspaceLinksAcceptanceTests
     public async Task GuardedCreateSupportsMissingParents()
     {
         using var sandbox = new Sandbox();
-        await new MutationService(sandbox.Workspace).CreateFileAsync("new/deep/file.txt", "inside");
+        await new FileOperationsService(sandbox.Workspace).CreateFileAsync("new/deep/file.txt", "inside");
         Assert.Equal("inside", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "new/deep/file.txt")));
     }
 
@@ -23,10 +23,12 @@ public sealed class WorkspaceLinksAcceptanceTests
         foreach (var path in new[] { ".", "existing" })
         {
             McpAssert.ToolError(await server.ToolAsync("create_file", new { path, content = "unexpected" }), "path_is_directory");
+            // FS-12: the direct RPC method is not a second implementation. It is rejected
+            // before any path check, and the tools/call assertion above keeps the policy.
             var legacy = await server.CallAsync("create_file", new { path, content = "unexpected" });
-            Assert.Equal("path_is_directory", legacy.GetProperty("error").GetProperty("message").GetString());
+            Assert.Equal(-32601, legacy.GetProperty("error").GetProperty("code").GetInt32());
             Assert.Equal("path_is_directory", (await Assert.ThrowsAsync<PathPolicyException>(() =>
-                new MutationService(policy).CreateFileAsync(path, "unexpected"))).Code);
+                new FileOperationsService(policy).CreateFileAsync(path, "unexpected"))).Code);
         }
         Assert.Equal("path_is_directory", (await Assert.ThrowsAsync<PathPolicyException>(() =>
             NativePath.WriteAsync(policy, ".", policy.Root, "unexpected", create: true))).Code);
@@ -68,11 +70,10 @@ public sealed class WorkspaceLinksAcceptanceTests
                 ["--allowSymLinks=" + allow.ToString().ToLowerInvariant()], workingDirectory: sandbox.Root);
             McpAssert.ToolError(await server.ToolAsync("read_file", new { path = requested }), "path_outside_workspace");
             McpAssert.ToolError(await server.ToolAsync("create_file", new { path = requested, content = "changed" }), "path_outside_workspace");
-            foreach (var method in new[] { "read_file", "create_file", "replace_in_file", "list_directory", "append_to_file" })
+            foreach (var method in new[] { "read_file", "create_file", "replace_in_file", "list_directory", "search", "append_to_file" })
             {
                 var reply = await server.CallAsync(method, new { path = requested, content = "changed", target_snippet = "outside", replacement_snippet = "changed", original_hash = FileTextHelper.ComputeContentHashes("outside").Sha256 });
-                Assert.Equal(-32001, reply.GetProperty("error").GetProperty("code").GetInt32());
-                Assert.Equal("path_outside_workspace", reply.GetProperty("error").GetProperty("message").GetString());
+                Assert.Equal(-32601, reply.GetProperty("error").GetProperty("code").GetInt32());
             }
         }
         Assert.Equal("outside", await File.ReadAllTextAsync(outside));
@@ -88,8 +89,8 @@ public sealed class WorkspaceLinksAcceptanceTests
             var path = "dummy/C:ordinary/file" + allow + ".txt";
             var policy = new PathPolicy(sandbox.Workspace, new(allow));
             Assert.True(Path.IsPathFullyQualified(policy.Resolve(path)));
-            await new MutationService(policy).CreateFileAsync(path, "inside");
-            Assert.Equal("inside", (await new FileService(policy).ReadFileAsync(path, new())).Text);
+            await new FileOperationsService(policy).CreateFileAsync(path, "inside");
+            Assert.Equal("inside", (await new FileOperationsService(policy).ReadFileAsync(path, new())).Text);
         }
     }
 
@@ -173,7 +174,7 @@ public sealed class WorkspaceLinksAcceptanceTests
             Directory.CreateDirectory(parent);
             File.WriteAllText(Path.Combine(parent, "file.txt"), "replacement");
         };
-        var error = await Assert.ThrowsAsync<PathPolicyException>(() => new MutationService(policy).ReplaceInFileAsync(
+        var error = await Assert.ThrowsAsync<PathPolicyException>(() => new FileOperationsService(policy).ReplaceInFileAsync(
             "parent/file.txt", "original", "changed", FileTextHelper.ComputeContentHashes("original").Sha256));
         Assert.True(invoked);
         Assert.Equal("path_changed", error.Code);
@@ -248,9 +249,9 @@ public sealed class WorkspaceLinksAcceptanceTests
         await sandbox.JunctionAsync("first", Path.Combine(sandbox.Workspace, "real"));
         await sandbox.JunctionAsync("second", Path.Combine(sandbox.Workspace, "first"));
         var policy = new PathPolicy(sandbox.Workspace, new(true));
-        await new MutationService(policy).CreateFileAsync("second/nested/deeper/new.txt", "created");
+        await new FileOperationsService(policy).CreateFileAsync("second/nested/deeper/new.txt", "created");
         Assert.Equal("created", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "real/nested/deeper/new.txt")));
-        await new FileService(policy).ReplaceInFileAsync("second/nested/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
+        await new FileOperationsService(policy).ReplaceInFileAsync("second/nested/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
         Assert.Equal("changed", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "real/nested/file.txt")));
         Assert.Equal("symlink_not_allowed", Assert.Throws<PathPolicyException>(() => new PathPolicy(sandbox.Workspace, new(false)).Resolve("second/nested/new.txt")).Code);
     }
@@ -263,7 +264,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         sandbox.Write("real/x.txt", "physical parent");
         sandbox.Write("x.txt", "logical parent");
         await sandbox.JunctionAsync("link", Path.Combine(sandbox.Workspace, "real/nested"));
-        var read = await new FileService(new PathPolicy(sandbox.Workspace, new(true))).ReadFileAsync("link/../x.txt", new());
+        var read = await new FileOperationsService(new PathPolicy(sandbox.Workspace, new(true))).ReadFileAsync("link/../x.txt", new());
         Assert.Equal("physical parent", read.Text);
     }
 
@@ -291,7 +292,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         await sandbox.JunctionAsync("ancestor", sandbox.Outside);
         var policy = new PathPolicy(Path.Combine(sandbox.Workspace, "ancestor/child"), new(false));
         Assert.Equal(Path.Combine(sandbox.Outside, "child"), policy.Root);
-        await new MutationService(policy).CreateFileAsync("new.txt", "safe");
+        await new FileOperationsService(policy).CreateFileAsync("new.txt", "safe");
         Assert.Equal("safe", await File.ReadAllTextAsync(Path.Combine(sandbox.Outside, "child/new.txt")));
     }
 
@@ -338,7 +339,7 @@ public sealed class WorkspaceLinksAcceptanceTests
             Directory.Move(Path.Combine(sandbox.Workspace, "parent"), Path.Combine(sandbox.Workspace, "old-parent"));
             Directory.Move(Path.Combine(sandbox.Workspace, "redirect"), Path.Combine(sandbox.Workspace, "parent"));
         };
-        var exception = await Assert.ThrowsAsync<PathPolicyException>(() => new MutationService(policy).ReplaceInFileAsync("parent/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256));
+        var exception = await Assert.ThrowsAsync<PathPolicyException>(() => new FileOperationsService(policy).ReplaceInFileAsync("parent/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256));
         Assert.Equal("symlink_not_allowed", exception.Code);
         Assert.Equal("outside", await File.ReadAllTextAsync(outside));
         Assert.Equal("inside", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "old-parent/file.txt")));
@@ -358,7 +359,7 @@ public sealed class WorkspaceLinksAcceptanceTests
             invoked = true;
             Assert.ThrowsAny<IOException>(() => Directory.Move(Path.Combine(sandbox.Workspace, "parent"), Path.Combine(sandbox.Workspace, "moved")));
         };
-        await new MutationService(policy).ReplaceInFileAsync("parent/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
+        await new FileOperationsService(policy).ReplaceInFileAsync("parent/file.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
         Assert.True(invoked);
         Assert.Equal("changed", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "parent/file.txt")));
         Assert.Equal("outside", await File.ReadAllTextAsync(outside));
@@ -378,11 +379,11 @@ public sealed class WorkspaceLinksAcceptanceTests
         using var sandbox = new Sandbox();
         await sandbox.JunctionAsync("external", sandbox.Outside);
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace, ["--allowSymLinks=false"]);
-        foreach (var method in new[] { "read_file", "create_file", "replace_in_file", "list_directory", "append_to_file" })
+        McpAssert.ToolError(await server.ToolAsync("read_file", new { path = "external/file.txt" }), "symlink_not_allowed");
+        foreach (var method in new[] { "read_file", "create_file", "replace_in_file", "list_directory", "search", "append_to_file" })
         {
             var reply = await server.CallAsync(method, new { path = "external/file.txt", content = "changed", target_snippet = "old", replacement_snippet = "new", original_hash = "hash" });
-            Assert.Equal(-32001, reply.GetProperty("error").GetProperty("code").GetInt32());
-            Assert.Equal("symlink_not_allowed", reply.GetProperty("error").GetProperty("message").GetString());
+            Assert.Equal(-32601, reply.GetProperty("error").GetProperty("code").GetInt32());
         }
         Assert.Empty(Directory.EnumerateFileSystemEntries(sandbox.Outside));
     }
@@ -397,17 +398,17 @@ public sealed class WorkspaceLinksAcceptanceTests
         sandbox.Symlink("internal.txt", "inside.txt");
         sandbox.Symlink("external.txt", outside);
         var denied = new PathPolicy(sandbox.Workspace, new(false));
-        var error = await Assert.ThrowsAsync<PathPolicyException>(() => new MutationService(denied).ReplaceInFileAsync("external.txt", "outside", "changed", FileTextHelper.ComputeContentHashes("outside").Sha256));
+        var error = await Assert.ThrowsAsync<PathPolicyException>(() => new FileOperationsService(denied).ReplaceInFileAsync("external.txt", "outside", "changed", FileTextHelper.ComputeContentHashes("outside").Sha256));
         Assert.Equal("symlink_not_allowed", error.Code);
         Assert.Equal("outside", await File.ReadAllTextAsync(outside));
         Assert.Equal("symlink_not_allowed", Assert.Throws<PathPolicyException>(() => denied.Resolve("internal.txt")).Code);
         var defaults = new PathPolicy(sandbox.Workspace);
-        Assert.Equal("outside", (await new FileService(defaults).ReadFileAsync("external.txt", new())).Text);
-        await new MutationService(defaults).ReplaceInFileAsync("external.txt", "outside", "changed", FileTextHelper.ComputeContentHashes("outside").Sha256);
+        Assert.Equal("outside", (await new FileOperationsService(defaults).ReadFileAsync("external.txt", new())).Text);
+        await new FileOperationsService(defaults).ReplaceInFileAsync("external.txt", "outside", "changed", FileTextHelper.ComputeContentHashes("outside").Sha256);
         Assert.Equal("changed", await File.ReadAllTextAsync(outside));
         var allowed = new PathPolicy(sandbox.Workspace, new(true));
-        Assert.Equal("inside", (await new FileService(allowed).ReadFileAsync("internal.txt", new())).Text);
-        await new MutationService(allowed).ReplaceInFileAsync("internal.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
+        Assert.Equal("inside", (await new FileOperationsService(allowed).ReadFileAsync("internal.txt", new())).Text);
+        await new FileOperationsService(allowed).ReplaceInFileAsync("internal.txt", "inside", "changed", FileTextHelper.ComputeContentHashes("inside").Sha256);
         Assert.Equal("changed", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "inside.txt")));
         var list = ServerProcess.JsonDocumentParse(await new ListDirectoryTool(allowed).ExecuteAsync(ServerProcess.Arguments(new { path = "." }), default));
         Assert.Equal(2, list.GetProperty("entries").EnumerateArray().Count(item => item.GetProperty("type").GetString() == "link"));
@@ -441,7 +442,7 @@ public sealed class WorkspaceLinksAcceptanceTests
         sandbox.Symlink("second", "first", true);
         sandbox.Symlink("real/nested/back", "../..", true);
         var policy = new PathPolicy(sandbox.Workspace, new(true));
-        await new MutationService(policy).CreateFileAsync("second/deep/новый.txt", "needle");
+        await new FileOperationsService(policy).CreateFileAsync("second/deep/новый.txt", "needle");
         Assert.Equal("needle", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "real/nested/deep/новый.txt")));
         Assert.Equal(Path.Combine(sandbox.Workspace, "real/new.txt"), policy.Resolve("second/../new.txt"));
         Assert.Throws<PathPolicyException>(() => new PathPolicy(Path.Combine(sandbox.Workspace, "first"), new(false)));
@@ -465,7 +466,7 @@ public sealed class WorkspaceLinksAcceptanceTests
             Directory.Move(Path.Combine(sandbox.Workspace, "parent"), Path.Combine(sandbox.Workspace, "old-parent"));
             Directory.Move(Path.Combine(sandbox.Workspace, "redirect"), Path.Combine(sandbox.Workspace, "parent"));
         };
-        await Assert.ThrowsAsync<PathPolicyException>(() => new MutationService(policy).CreateFileAsync("parent/new.txt", "changed"));
+        await Assert.ThrowsAsync<PathPolicyException>(() => new FileOperationsService(policy).CreateFileAsync("parent/new.txt", "changed"));
         Assert.Equal("outside", await File.ReadAllTextAsync(outside));
         Assert.False(File.Exists(Path.Combine(sandbox.Workspace, "old-parent/new.txt")));
     }

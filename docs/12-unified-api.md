@@ -2,13 +2,17 @@
 
 Приоритет: P2. Источники: Program, MutationService, FileService, CreateFileTool, DTO, AGENTS.md.sample.
 
+Статус: выполнено.
+
+Версия реализации: 1.13.0. Независимое ревью этой реализации ещё не проводилось.
+
 ## Дефект
 
 Стандартные tools и custom RPC methods имеют разные write/create semantics. list/search/append custom methods — заглушки с успешным result. Sample рекомендует несуществующий append tool. Direct create содержит File.Exists→Create race.
 
-## Состояние после FS-07 (1.8.0)
+## Состояние после FS-07 (1.8.0), закрыто в 1.13.0
 
-Пункт 12 ниже (удаление прямых RPC-методов) **не выполнен** — это работа FS-12. Но расхождение реализаций, из-за которого пункт 12 существует, уже устранено: `read_file`, `create_file`, `replace_in_file`, `list_directory` и `search` больше не имеют собственных stub/divergent путей, они вызывают тот же registered tool, что и `tools/call`. Практическое следствие для приёмки: `UnifiedApiTests.CustomRpcMethodsAreRejectedInsteadOfExecutingDivergentOrStubOperations` падает на всех шести `InlineData`, потому что методы теперь **выполняют** операцию, а не возвращают заглушку или успешный псевдорезультат. Это ожидаемое промежуточное состояние: FS-07 закрыл именно расхождение semantics, а FS-12 удаляет сами методы и переводит их KnownDefect-случаи в `-32601`. До тех пор оболочка ответа legacy-методов остаётся принятой FS-01/FS-04 (`-32001`, без `details`), а лимиты, коды и cancellation у них общие с tool (FS-07 R16).
+До этой эпохи пункт удаления прямых RPC-методов не был выполнен. Расхождение реализаций FS-07 уже убрал: `read_file`, `create_file`, `replace_in_file`, `list_directory` и `search` вызывали тот же registered tool, что и `tools/call`, поэтому `UnifiedApiTests.CustomRpcMethodsAreRejectedInsteadOfExecutingDivergentOrStubOperations` падал на всех шести `InlineData`. FS-12 удаляет сами методы: такой `method` получает JSON-RPC `-32601` и не выполняется. Оболочки `-32001` больше нет.
 
 ## Решение и контракт
 
@@ -29,3 +33,15 @@ UnifiedApiTests: все шесть custom methods → -32601; sample не рек
 Добавить schema/runtime parity для всех aliases и unknown properties, одинаковые defaults/services, hash after create/replace/read, concurrent create FS-02, source-generation/AOT DTO tests. Не добавлять тест, который просто сверяет строки исходного кода; sample contract test допустим как проверка опубликованной инструкции.
 
 Зависимости: FS-01…05/09…11/13. SDK migration, structured output и append — backlog.
+
+## Реализация (1.13.0)
+
+- Прямые method `read_file`, `create_file`, `replace_in_file`, `list_directory`, `search`, `append_to_file` сняты с диспетчера `Program`. Неизвестный method, включая эти шесть, — `-32601` `Method not found`, без `result` и без записи. `append_to_file` не добавлен; рекомендация удалена из `AGENTS.md.sample` и README; будущий append остаётся B-11 в [backlog.md](backlog.md).
+- `FileOperationsService` — единственный сервис чтения, создания и замены. Он использует `PathPolicy`, decoder `TextDocument` (через `AtomicFileWriter` / `FileContentReader`), `AtomicFileWriter` и перевод ошибок `FileErrorClassifier`. `MutationService` удалён. `create_file`, `read_file` и `replace_in_file` вызывают один экземпляр сервиса из composition root; `CreateFileTool` больше не пишет через собственный вызов `AtomicFileWriter`.
+- Create остаётся atomic create-no-overwrite (`AtomicFileWriter`, `create: true`). Существующий файл — `file_exists`. Конкурирующий create не заменяет байты победителя. Переводы строк создаваемого текста сохраняются по FS-03.
+- Алиасы `path` / `filePath` / `file_path` сохранены. Schema четырёх path-tools требует хотя бы один через `anyOf`. Строка из одних пробелов не является заданным путём — то же множество, что `PathPolicy.Resolve` (`string.IsNullOrWhiteSpace`): schema каждого алиаса — `minLength: 1` и `pattern: "\\S"`, а `ToolArguments.GetRequiredPath` отвечает `ArgumentException` → `-32602` до записи. Runtime также отвергает не-string и неизвестное свойство; два и более заданных алиаса допустимы только при одинаковом значении, разные — `-32602`. Путь из конфликтующих алиасов не выбирается.
+- `additionalProperties: false` и типы проверяются на сервере, а не только схемой.
+- Результаты create/read/replace стабильно содержат `path`, `md5`, `sha256`. Create сохраняет `status`. Replace сохраняет `status`, `new_hash`, `snippet`; `sha256` и `new_hash` — один дайджест. List и search остаются объектами: list — `entries` из `{name,type}` и метаданные усечения FS-07; search — `matches`/`truncated`/`incomplete`/`skipped_count`/`skipped` FS-04 и `truncation_reason` FS-07. Эти DTO сериализуются source-generated `McpJsonContext`.
+- Версия публикации: `1.13.0` (`Version`, `AssemblyVersion` `1.13.0.0`, `FileVersion` `1.13.0.0`). README и `AGENTS.md.sample` описывают переход с custom RPC на `tools/call`.
+
+Приёмка на Windows, Debug, сборка `dotnet build FilesystemMCP.sln -m:1 -p:UseSharedCompilation=false -p:PublishAot=false -p:PublishTrimmed=false --no-incremental` — 0 warnings, 0 errors. Затем `--no-build -p:PublishAot=false -p:PublishTrimmed=false`: `Spec=FS-12` — 14 cases, 14 passed, 0 failed, 0 skipped; `Status=Baseline` — 500 cases, 492 passed, 0 failed, 8 skipped; `Status=KnownDefect` — 2 cases, 0 passed, 2 failed (только прежние FS-13 `BooleanIdIsInvalidRequest` и `UnsupportedVersionFallsBackToImplementedVersion`); полный прогон — 502 cases, 492 passed, 2 failed, 8 skipped. Падающий набор полного прогона совпадает с KnownDefect. Внешний тайминговый дефект FS-07 `SearchBudgetTests.SearchThatGenuinelyExceedsTheOperationTimeoutReturnsAPartialResult` в этих прогонах не упал и здесь не исправлялся. До правки: Baseline 487 (479 passed, 8 skipped), KnownDefect 10 (FS-12 ×8 + FS-13 ×2), весь проект 497. Изменения матрицы: восемь прежних KnownDefect-случаев `UnifiedApiTests` переведены в Baseline, добавлено 5 cases (`SchemaAndRuntimeAgreeOnAliasesTypesAndUnknownProperties`, `CreateReplaceAndReadSharePathAndHashes`, `CreateReadAndReplaceShareOneServiceAndTheDefaultBudget`, `ConcurrentCreateDoesNotReplaceTheWinnerBytes`, `ResultsSerializeThroughTheSourceGeneratedContext`). 14 = 8 переведённых + 1 прежний Baseline `StandardCreateDoesNotOverwriteExistingFile` + 5 новых. KnownDefect 10 → 2, Baseline 487 → 500, проект 497 → 502.

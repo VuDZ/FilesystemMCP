@@ -84,11 +84,13 @@ internal class OperationalException(string code, string message) : InvalidOperat
 internal sealed class UnknownToolException(string toolName) : ArgumentException("Unknown tool: '" + toolName + "'");
 
 /// <summary>
-/// The single mapping from a failure to the FS-05 error object. Every entry point
-/// (MCP <c>tools/call</c> and the legacy direct RPC methods) resolves codes here, so
-/// classification never depends on an exception message and never diverges per
-/// entry point. Only expected operational failures are mapped; anything else stays
-/// an unexpected defect and reaches the correlation path.
+/// The single mapping from a failure to the FS-05 error object. <c>tools/call</c>
+/// resolves codes here, so classification never depends on an exception message.
+/// Direct RPC methods were removed in FS-12 (1.13.0): a request whose method is
+/// <c>read_file</c>, <c>create_file</c>, <c>replace_in_file</c>, <c>list_directory</c>,
+/// <c>search</c> or <c>append_to_file</c> is JSON-RPC <c>-32601</c> and does not run.
+/// Only expected operational failures are mapped; anything else stays an unexpected
+/// defect and reaches the correlation path.
 /// </summary>
 internal static class ToolErrorMapper
 {

@@ -39,7 +39,7 @@ public sealed class EmptyReplacementTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "original");
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         var rawArgs = ServerProcess.Arguments(new { path = "file.txt", target_snippet = "", replacement_snippet = "new", original_hash = FileTextHelper.ComputeContentHashes("original").Sha256 });
         await Assert.ThrowsAsync<ArgumentException>(() => new ReplaceInFileTool(service).ExecuteAsync(rawArgs, default));
         Assert.Equal("original", await File.ReadAllTextAsync(path));
@@ -51,7 +51,7 @@ public sealed class EmptyReplacementTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "original");
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         var args = ServerProcess.Arguments(new
         {
             path = "file.txt", target_snippet = "original",
@@ -88,7 +88,7 @@ public sealed class EmptyReplacementTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "original");
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         var args = ServerProcess.JsonDocumentParse(fragment);
         await Assert.ThrowsAsync<ArgumentException>(() => new ReplaceInFileTool(service).ExecuteAsync(args, default));
         Assert.Equal("original", await File.ReadAllTextAsync(path));
@@ -225,7 +225,7 @@ public sealed class EmptyReplacementTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "original");
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         var read = await service.ReadFileAsync("file.txt", new());
         foreach (var padded in new[] { " " + read.Sha256, read.Sha256 + " ", "\t" + read.Sha256, read.Sha256 + "\r\n" })
         {
@@ -292,7 +292,7 @@ public sealed class EmptyReplacementTests
         Assert.Equal(encoding.GetPreamble(), await File.ReadAllBytesAsync(path));
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, payload.GetProperty("new_hash").GetString());
         Assert.Equal("", payload.GetProperty("snippet").GetString());
-        var reread = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new());
+        var reread = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new());
         Assert.Equal("", reread.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, reread.Sha256);
     }
@@ -348,7 +348,7 @@ public sealed class EmptyReplacementTests
         Assert.Empty(await File.ReadAllBytesAsync(path));
         Assert.Equal("", payload.GetProperty("snippet").GetString());
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, payload.GetProperty("new_hash").GetString());
-        var reread = await new FileService(sandbox.Workspace).ReadFileAsync("file.txt", new());
+        var reread = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("file.txt", new());
         Assert.Equal("", reread.Text);
         Assert.Equal(FileTextHelper.ComputeContentHashes("").Sha256, reread.Sha256);
     }
@@ -508,7 +508,7 @@ public sealed class EmptyReplacementTests
 
     private static async Task<JsonElement> ReplaceAsync(Sandbox sandbox, string target, string replacement)
     {
-        var service = new FileService(sandbox.Workspace);
+        var service = new FileOperationsService(sandbox.Workspace);
         var read = await service.ReadFileAsync("file.txt", new());
         var raw = await new ReplaceInFileTool(service).ExecuteAsync(ServerProcess.Arguments(new
         {

@@ -52,7 +52,7 @@ Windows drive/root-changing components such as `dummy/C:outside` are rejected in
 
 `search` returns a JSON object such as `{"matches":[{"path":"file.txt","line":1}],"truncated":false,"incomplete":true,"skipped_count":1,"skipped":[{"path":"link","reason":"symlink_not_allowed","code":"symlink_not_allowed"}]}` (shown for explicit `false`). `reason` is the canonical FS-04 field; `code` carries the same value for backward compatibility with the FS-01 baseline tests. `matches` holds at most 50 entries, and `truncated` reflects only that result/budget cap — it says nothing about completeness. `incomplete=true` means at least one item was skipped because of a lock, denied access, disappearance, or a link; `skipped_count` is the full number of skipped items even when the bounded `skipped` detail list is capped at 50 entries. An empty `matches` array must therefore not be read as "no matches" while `incomplete=true`. Search keeps going past these expected per-entry errors, retains the logical workspace alias in `path`, skips rejected/dangling/cyclic links and already-visited physical directories (`already_visited`), and shares one open read handle between the binary probe and the match scan, so a concurrent rename/delete cannot abort the whole search. In default `true` mode it searches external linked directories as well.
 
-Path errors in `tools/call` return `result.isError=true` and JSON text with `code` and `message`. Codes added for paths are `symlink_not_allowed`, `path_outside_workspace`, `symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`, `path_changed`, `unsupported_safe_write`, and `path_is_directory` (root/existing directory used as a file). Legacy direct path methods use JSON-RPC error `-32001` with the same code in `message` until FS-12 removes them. The complete operational error mapping (all 13 codes, bounded `details`, `retryable`, unknown-tool/argument validation, correlation ids for unexpected defects) is implemented by FS-05 in version 1.6.0; see [FS-05 contract and code table](docs/05-tool-errors.md).
+Path errors in `tools/call` return `result.isError=true` and JSON text with `code` and `message`. Codes added for paths are `symlink_not_allowed`, `path_outside_workspace`, `symlink_dangling`, `symlink_cycle`, `unsupported_reparse_point`, `path_changed`, `unsupported_safe_write`, and `path_is_directory` (root/existing directory used as a file). Direct RPC methods with those tool names were removed in FS-12 (1.13.0): the request is JSON-RPC `-32601` and does not run. The complete operational error mapping (all 13 codes, bounded `details`, `retryable`, unknown-tool/argument validation, correlation ids for unexpected defects) is implemented by FS-05 in version 1.6.0; see [FS-05 contract and code table](docs/05-tool-errors.md).
 
 `read_file` and `search` open files with `FileShare.ReadWrite | FileShare.Delete` where the platform supports it; write sharing remains the FS-02 strategy and is deliberately not copied from reads. A direct read retries a transient sharing violation at most three times with 50/100 ms backoff and an overall deadline (honoring cancellation); `search` skips instead of retrying for responsiveness. Sharing/lock violations, denied access and disappearance are classified by HRESULT (`ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION` → `file_locked`, `ERROR_ACCESS_DENIED` → `access_denied`, file/path not found → `file_not_found`) through one shared classifier used by `read_file`, `list_directory`, `replace_in_file` and search, not by exception text. Access-denied, missing-file and `hash_conflict` outcomes are never retried, and a mutation is never retried after an uncertain commit. POSIX sharing is advisory, so the Windows lock behavior is not claimed as equivalent there.
 
@@ -108,7 +108,7 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 
 ### MCP Tools
 
-All path-based tools accept the file location as **`path`**, **`filePath`**, or **`file_path`** (first non-empty wins; priority: `path` > `filePath` > `file_path`).
+All path-based tools accept the file location as **`path`**, **`filePath`**, or **`file_path`**. At least one is required. When more than one non-empty alias is sent, every value must be the same string; different values are rejected with JSON-RPC `-32602` and no alias is chosen silently. Unknown properties and wrong JSON types are rejected the same way. Call the tools through MCP `tools/call`. The method names `read_file`, `create_file`, `replace_in_file`, `list_directory`, `search` and `append_to_file` are not RPC methods; a request that uses one of them as `method` receives `-32601`.
 
 #### `list_directory`
 Lists files and directories in the specified folder (non-recursive). Agents MUST use this to explore the project structure before assuming file paths.
@@ -175,7 +175,7 @@ Searches for regex matches across files and returns file paths with line numbers
 </details>
 
 #### `create_file`
-Creates a strictly NEW file. Do not use this to edit existing files (use `replace_in_file` instead).
+Creates a strictly NEW file with an atomic create-no-overwrite. An existing file returns `file_exists` and its bytes stay unchanged. Supplied line endings are preserved (FS-03). Do not use this to edit existing files (use `replace_in_file` instead). The result object contains `status`, `path`, `md5` and `sha256`.
 
 <details>
 <summary>Parameters</summary>
@@ -186,7 +186,7 @@ Creates a strictly NEW file. Do not use this to edit existing files (use `replac
 </details>
 
 #### `replace_in_file`
-Replaces the first exact match of a text snippet in a file using optimistic locking. The `original_hash` is mandatory and must be obtained from the latest `read_file` call.
+Replaces the first exact match of a text snippet in a file using optimistic locking. The `original_hash` is mandatory and must be obtained from the latest `read_file` call. The result object keeps `status`, `new_hash` and `snippet`, and also carries the same `path`, `md5` and `sha256` as `read_file` and `create_file` (`sha256` and `new_hash` are the same digest).
 
 <details>
 <summary>Parameters</summary>
@@ -202,7 +202,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.9.0
+**Версия:** 1.13.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -282,7 +282,7 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 
 ### MCP Инструменты
 
-Все tools с путём к файлу/директории принимают **`path`**, **`filePath`** или **`file_path`** (используется первое непустое; приоритет: `path` > `filePath` > `file_path`).
+Все tools с путём к файлу/директории принимают **`path`**, **`filePath`** или **`file_path`**. Нужен хотя бы один. Если непустых алиасов несколько, все значения обязаны совпадать; разные значения — JSON-RPC `-32602`, путь молча не выбирается. Неизвестные свойства и неверные JSON-типы отвергаются так же. Вызов — только MCP `tools/call`. Имена `read_file`, `create_file`, `replace_in_file`, `list_directory`, `search` и `append_to_file` не являются RPC-методами: запрос с таким `method` получает `-32601`.
 
 #### `list_directory`
 Показывает файлы и директории в указанной папке (без рекурсии). Агенты обязаны использовать этот инструмент для изучения структуры проекта, прежде чем предполагать пути к файлам.
@@ -349,7 +349,7 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 </details>
 
 #### `create_file`
-Создает строго новый файл. Не используй для изменения существующих файлов (для этого есть `replace_in_file`).
+Создает строго новый файл атомарно и без перезаписи. Существующий файл — `file_exists`, его байты не меняются. Переданные переводы строк сохраняются (FS-03). Не используй для изменения существующих файлов (для этого есть `replace_in_file`). Объект результата содержит `status`, `path`, `md5` и `sha256`.
 
 <details>
 <summary>Параметры</summary>
@@ -360,7 +360,7 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 </details>
 
 #### `replace_in_file`
-Заменяет первое точное вхождение фрагмента текста в файле с использованием оптимистичной блокировки. Параметр `original_hash` обязателен и должен быть получен из последнего вызова `read_file`.
+Заменяет первое точное вхождение фрагмента текста в файле с использованием оптимистичной блокировки. Параметр `original_hash` обязателен и должен быть получен из последнего вызова `read_file`. Объект результата сохраняет `status`, `new_hash` и `snippet` и дополнительно несёт те же `path`, `md5` и `sha256`, что `read_file` и `create_file` (`sha256` и `new_hash` — один и тот же дайджест).
 
 <details>
 <summary>Параметры</summary>
@@ -378,4 +378,4 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 - [Backlog остальных улучшений](docs/backlog.md)
 - [Отдельный regression test project и команды запуска](FilesystemMcp.Tests/README.md)
 
-FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован в версии 1.7.0 и принят независимым ревью (в первом раунде подняты замечания, они исправлены и подтверждены во втором раунде): отказоустойчивый logger (best-effort все стадии, пользовательский каталог и `--logDirectory`, bounded queue с одним writer-ом, ротация 10 MiB × 5, запрет content в логах, UTC + correlation, bounded exit flush); полный текст — в [06-fail-safe-logging.md](docs/06-fail-safe-logging.md). FS-07 реализован в версии 1.8.0: бюджеты запуска на кадр, файл, строку, ответ, обход, дедлайн и параллельные чтения, отмена по `requestId` не блокирует ping, отказ чтения не материализует файл целиком; полный текст — в [07-resource-budgets.md](docs/07-resource-budgets.md). FS-08 реализован в версии 1.9.0: установщик разбирает строгий JSON, сохраняет неизвестные настройки, чужие servers и дополнительные поля `filesystem-mcp`, пишет config и AGENTS.md через temp + atomic rename, делает побайтовый backup только на изменяющем запуске, восстанавливает config из backup при отказе второго commit и получил `-AllowSymLinks`/`-WhatIf`/`-AsJson`; полный текст — в [08-installer-merge.md](docs/08-installer-merge.md). FS-09 реализован в версии 1.10.0 (поиск по UTF-16/UTF-32 через общий с read_file строгий decoder), FS-11 — в версии 1.11.0 (пустые/whitespace snippets, якорь snippet на фактической правке), FS-10 — в версии 1.12.0 (точный canonical текст чтения и явные метаданные неполноты `total_lines`/`start_line`/`end_line`/`truncated`/`has_more`); см. [09-search-encoding.md](docs/09-search-encoding.md), [11-empty-replacement.md](docs/11-empty-replacement.md) и [10-read-fidelity.md](docs/10-read-fidelity.md). Оставшиеся спецификации (FS-12/FS-13) описывают запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.
+FS-01 реализован и принят независимым ревью в третьем раунде; версия 1.2.0 включает это самостоятельное исправление. FS-02 принят независимым ревью в первом раунде; версия 1.3.0 включает атомарную запись. FS-03 принят независимым ревью в первом раунде; версия 1.4.0 включает строгое декодирование и сохранение encoding, BOM и переводов строк. FS-04 принят независимым ревью в первом раунде; версия 1.5.0 включает корректный read sharing, единый поток probe+decode+search и неполный поиск с classification file_locked/access_denied/file_not_found. FS-05 реализован в версии 1.6.0: единый `ToolErrorMapper`, полная таблица кодов, безопасные `details`/`retryable`, `-32602` для unknown tool и формы аргументов, correlation id для непредвиденных дефектов. Принят независимым ревью: в первом раунде подняты замечания, они исправлены и подтверждены в раундах 2–3. FS-06 реализован в версии 1.7.0 и принят независимым ревью (в первом раунде подняты замечания, они исправлены и подтверждены во втором раунде): отказоустойчивый logger (best-effort все стадии, пользовательский каталог и `--logDirectory`, bounded queue с одним writer-ом, ротация 10 MiB × 5, запрет content в логах, UTC + correlation, bounded exit flush); полный текст — в [06-fail-safe-logging.md](docs/06-fail-safe-logging.md). FS-07 реализован в версии 1.8.0: бюджеты запуска на кадр, файл, строку, ответ, обход, дедлайн и параллельные чтения, отмена по `requestId` не блокирует ping, отказ чтения не материализует файл целиком; полный текст — в [07-resource-budgets.md](docs/07-resource-budgets.md). FS-08 реализован в версии 1.9.0: установщик разбирает строгий JSON, сохраняет неизвестные настройки, чужие servers и дополнительные поля `filesystem-mcp`, пишет config и AGENTS.md через temp + atomic rename, делает побайтовый backup только на изменяющем запуске, восстанавливает config из backup при отказе второго commit и получил `-AllowSymLinks`/`-WhatIf`/`-AsJson`; полный текст — в [08-installer-merge.md](docs/08-installer-merge.md). FS-09 реализован в версии 1.10.0 (поиск по UTF-16/UTF-32 через общий с read_file строгий decoder), FS-11 — в версии 1.11.0 (пустые/whitespace snippets, якорь snippet на фактической правке), FS-10 — в версии 1.12.0 (точный canonical текст чтения и явные метаданные неполноты `total_lines`/`start_line`/`end_line`/`truncated`/`has_more`), FS-12 — в версии 1.13.0 (один `FileOperationsService`, пять tools только через `tools/call`, прямые RPC удалены); см. [09-search-encoding.md](docs/09-search-encoding.md), [11-empty-replacement.md](docs/11-empty-replacement.md), [10-read-fidelity.md](docs/10-read-fidelity.md) и [12-unified-api.md](docs/12-unified-api.md). Оставшаяся спецификация FS-13 описывает запланированные изменения. KnownDefect проверяют ожидаемое исправленное поведение; Baseline содержит исправленные и контрольные сценарии.

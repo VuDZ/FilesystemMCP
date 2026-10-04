@@ -147,7 +147,7 @@ public sealed class ToolErrorsTests
     public async Task OversizedReadIsResourceLimitAndNotRetryable()
     {
         using var sandbox = new Sandbox();
-        sandbox.Write("large.txt", string.Join("\n", Enumerable.Repeat("line", FileService.DefaultMaxLines + 1)));
+        sandbox.Write("large.txt", string.Join("\n", Enumerable.Repeat("line", FileOperationsService.DefaultMaxLines + 1)));
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
         var reply = await server.ToolAsync("read_file", new { path = "large.txt" });
         // An existing read guard, not a budget engine: the same request must not be retried.
@@ -533,17 +533,18 @@ public sealed class ToolErrorsTests
         Assert.True(McpAssert.ErrorPayload(failure).GetProperty("code").ValueKind == JsonValueKind.String);
     }
 
-    // ---- the legacy direct RPC surface uses the same mapping ----
+    // ---- direct RPC methods are not an entry point anymore (FS-12) ----
 
     [Fact, Trait("Status", "Baseline")]
-    public async Task LegacyEntryPointUsesTheSameMachineCode()
+    public async Task RemovedDirectRpcIsMethodNotFound()
     {
         using var sandbox = new Sandbox();
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace);
-        // Legacy methods keep the accepted FS-01/FS-04 envelope (-32001 with the code as
-        // the message) but their code set is the one shared mapping; FS-12 removes them.
+        // The machine code for a missing file stays on tools/call. The old direct method
+        // must not run that operation and must not answer with the retired -32001 envelope.
+        McpAssert.ToolError(await server.ToolAsync("read_file", new { path = "missing.txt" }), "file_not_found");
         var reply = await server.CallAsync("read_file", new { path = "missing.txt" });
-        Assert.Equal(-32001, reply.GetProperty("error").GetProperty("code").GetInt32());
-        Assert.Equal("file_not_found", reply.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(-32601, reply.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.False(reply.TryGetProperty("result", out _));
     }
 }
