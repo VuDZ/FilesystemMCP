@@ -6,6 +6,8 @@ public sealed class WindowsFactAttribute : FactAttribute
     public WindowsFactAttribute()
     {
         if (!OperatingSystem.IsWindows())
+        {
             Skip = "Requires Windows sharing/junction semantics; run on the Windows test lane.";
+        }
     }
 }

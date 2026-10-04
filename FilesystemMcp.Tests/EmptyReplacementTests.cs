@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using FilesystemMcp.Tests.Infrastructure;
 
@@ -208,12 +207,6 @@ public sealed class EmptyReplacementTests
             new { path = "file.txt", target_snippet = "", replacement_snippet = "_", original_hash = hash }), -32602);
         Assert.Equal("original", await File.ReadAllTextAsync(path));
         Assert.Empty(Directory.EnumerateFiles(sandbox.Workspace, ".filesystemmcp-*.tmp"));
-    }
-
-    private static JsonElement RequiredProperty(JsonElement properties, string name)
-    {
-        Assert.True(properties.TryGetProperty(name, out var property), "The schema must declare " + name);
-        return property;
     }
 
     /// <summary>
@@ -527,5 +520,11 @@ public sealed class EmptyReplacementTests
         }
 
         return count;
+    }
+
+    private static JsonElement RequiredProperty(JsonElement properties, string name)
+    {
+        Assert.True(properties.TryGetProperty(name, out var property), "The schema must declare " + name);
+        return property;
     }
 }

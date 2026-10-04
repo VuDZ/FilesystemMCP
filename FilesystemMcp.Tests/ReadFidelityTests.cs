@@ -453,17 +453,13 @@ public sealed class ReadFidelityTests
     /// </summary>
     private sealed class PatternStream : Stream
     {
-        private readonly byte[] _pattern;
-        private readonly long _length;
-        private long _position;
+        internal long BytesHandedOut { get; private set; }
 
         internal PatternStream(long length, string pattern)
         {
             _length = length;
             _pattern = Sandbox.Utf8.GetBytes(pattern);
         }
-
-        internal long BytesHandedOut { get; private set; }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -501,5 +497,9 @@ public sealed class ReadFidelityTests
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        private readonly byte[] _pattern;
+        private readonly long _length;
+        private long _position;
     }
 }

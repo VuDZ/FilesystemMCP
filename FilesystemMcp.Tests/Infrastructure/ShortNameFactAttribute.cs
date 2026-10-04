@@ -12,10 +12,13 @@ public sealed class ShortNameFactAttribute : FactAttribute
             Skip = "Requires Windows 8.3 directory aliases; run the Windows test lane.";
             return;
         }
+
         using var sandbox = new Sandbox();
         if (GetShortPath(sandbox.Workspace) is not { } alias
             || string.Equals(alias, sandbox.Workspace, StringComparison.OrdinalIgnoreCase))
+        {
             Skip = "Windows 8.3 aliases are unavailable on this temp volume; run an 8.3-enabled Windows lane.";
+        }
     }
 
     internal static string? GetShortPath(string path)

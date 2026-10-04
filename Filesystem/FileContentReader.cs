@@ -47,7 +47,6 @@ internal static class FileContentReader
     /// <see cref="CanonicalContent.TotalLines"/> still cover the whole file.
     /// </param>
     /// <param name="budget">The immutable FS-07 budget set.</param>
-    /// <param name="cancellationToken">Observed on every read and inside the line loop.</param>
     /// <param name="openStream">
     /// Deterministic test seam: reads through this factory instead of opening the path.
     /// Null in production.
@@ -64,17 +63,18 @@ internal static class FileContentReader
     /// response budget here is what keeps a full-file read from building a payload that
     /// the transport is guaranteed to replace: the refusal happens during the scan.
     /// </param>
+    /// <param name="cancellationToken">Observed on every read and inside the line loop.</param>
     public static async Task<CanonicalContent> ReadCanonicalAsync(
         string resolvedPath,
         int? startLine,
         int? endLine,
         bool captureFullText,
         ResourceBudget budget,
-        CancellationToken cancellationToken = default,
         Func<string, Stream>? openStream = null,
         Action<int>? beforeRetry = null,
         int? maxLines = null,
-        int? textLimit = null)
+        int? textLimit = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(resolvedPath);
         ArgumentNullException.ThrowIfNull(budget);
@@ -108,9 +108,9 @@ internal static class FileContentReader
     public static async Task<IReadOnlyList<string>> ReadAllLinesAsync(
         string resolvedPath,
         ResourceBudget budget,
-        CancellationToken cancellationToken = default,
         Func<string, Stream>? openStream = null,
-        Action<int>? beforeRetry = null)
+        Action<int>? beforeRetry = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(resolvedPath);
         ArgumentNullException.ThrowIfNull(budget);

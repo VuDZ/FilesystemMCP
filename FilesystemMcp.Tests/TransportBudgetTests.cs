@@ -30,21 +30,6 @@ public sealed class TransportBudgetTests
     /// <summary>Deadline of the parked-write case; the test lets it fire before releasing.</summary>
     private const long DeadlineMilliseconds = 300;
 
-    /// <summary>
-    /// Extra wall-clock time after <see cref="DeadlineMilliseconds"/>.
-    /// <c>CancelAfter</c> is a timer on the server process. A parallel suite has
-    /// delayed that timer by more than a small multiple of a 300 ms budget; releasing
-    /// then lets the write commit, and the case fails even though a fired deadline
-    /// would have kept the original bytes. Run alone, the timer is on time.
-    /// </summary>
-    private static readonly TimeSpan DeadlineTimerSlack = TimeSpan.FromSeconds(15);
-
-    /// <summary>
-    /// Failure deadline for responses that are only produced after the test releases a
-    /// barrier the test itself holds. It is a watchdog, not a budget for the server.
-    /// </summary>
-    private static readonly TimeSpan ResponseWatchdog = TimeSpan.FromSeconds(20);
-
     // ---- 1. oversized frame ----
 
     [Fact, Trait("Status", "Baseline")]
@@ -59,7 +44,7 @@ public sealed class TransportBudgetTests
         Assert.True(Encoding.UTF8.GetByteCount(frame) > RequestBudget, "the fixture frame must exceed the budget");
         await server.SendRawLineAsync(frame);
 
-        var refused = await server.ReadAsync(ResponseWatchdog);
+        var refused = await server.ReadAsync(_responseWatchdog);
         McpAssert.ProtocolError(refused, -32600);
         AssertUnattributed(refused);
         // Not even partially: nothing was created from the frame that was refused.
@@ -85,7 +70,7 @@ public sealed class TransportBudgetTests
         // inclusive; every size is produced and verified by the fixture, not assumed.
         var belowFrame = CreateFileFrameOfSize(910, "below.txt", RequestBudget - 1, out var belowContent);
         await server.SendRawLineAsync(belowFrame);
-        McpAssert.Success(await server.ReadResponseAsync(910, ResponseWatchdog));
+        McpAssert.Success(await server.ReadResponseAsync(910, _responseWatchdog));
         Assert.Equal(belowContent, await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "below.txt")));
 
         // Terminated with a bare LF: the budget is the frame budget, and the CR of a CRLF
@@ -94,12 +79,12 @@ public sealed class TransportBudgetTests
         // byte over).
         var exactFrame = CreateFileFrameOfSize(911, "exact.txt", RequestBudget, out var exactContent);
         await server.SendRawBytesAsync(Encoding.UTF8.GetBytes(exactFrame + "\n"));
-        McpAssert.Success(await server.ReadResponseAsync(911, ResponseWatchdog));
+        McpAssert.Success(await server.ReadResponseAsync(911, _responseWatchdog));
         Assert.Equal(exactContent, await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "exact.txt")));
 
         var overFrame = CreateFileFrameOfSize(912, "over.txt", RequestBudget + 1, out _);
         await server.SendRawLineAsync(overFrame);
-        McpAssert.ProtocolError(await server.ReadAsync(ResponseWatchdog), -32600);
+        McpAssert.ProtocolError(await server.ReadAsync(_responseWatchdog), -32600);
         Assert.False(File.Exists(Path.Combine(sandbox.Workspace, "over.txt")), "a frame one byte over the budget was executed");
     }
 
@@ -120,7 +105,7 @@ public sealed class TransportBudgetTests
         frame[placeholder] = 0xFF;
         await server.SendRawBytesAsync(frame);
 
-        var reply = await server.ReadAsync(ResponseWatchdog);
+        var reply = await server.ReadAsync(_responseWatchdog);
         McpAssert.ProtocolError(reply, -32700);
         AssertUnattributed(reply);
         // The frame is not silently repaired into a valid ping either.
@@ -140,7 +125,7 @@ public sealed class TransportBudgetTests
 
         // The request itself fits the (default) request budget; only the answer cannot.
         var id = await server.SendToolAsync("read_file", new { path = "big.txt" });
-        var line = await server.ReadRawLineAsync(ResponseWatchdog);
+        var line = await server.ReadRawLineAsync(_responseWatchdog);
 
         // The delivered line is complete, valid JSON, attributed to the request and
         // strictly inside the response budget — never a truncated payload.
@@ -168,7 +153,7 @@ public sealed class TransportBudgetTests
         // The invocation holds its slot and is parked inside the host, so it cannot have
         // written anything yet. A ping sent now must be answered by the reader loop.
         var pingId = await server.SendCallAsync("ping", new { });
-        var ping = await server.ReadResponseAsync(pingId, ResponseWatchdog);
+        var ping = await server.ReadResponseAsync(pingId, _responseWatchdog);
         Assert.True(ping.TryGetProperty("result", out _), "the ping must be answered while the tool is parked: " + ping);
 
         // Observed order: the ping's frame is the only frame produced since the barrier.
@@ -180,7 +165,7 @@ public sealed class TransportBudgetTests
         Assert.Equal("{\"jsonrpc\":\"2.0\",\"id\":" + pingId + ",\"result\":{}}", whileParked[0]);
 
         await gate.Release();
-        var read = await server.ReadResponseAsync(toolId, ResponseWatchdog);
+        var read = await server.ReadResponseAsync(toolId, _responseWatchdog);
         Assert.Equal("held content", ServerProcess.Payload(read).GetProperty("text").GetString());
 
         var afterRelease = server.FramesSince(handshakeFrames);
@@ -212,7 +197,7 @@ public sealed class TransportBudgetTests
         // A parked invocation cannot answer by itself, so releasing it is part of the
         // setup: what it must answer after the release is the cancellation, not the read.
         await gate.Release();
-        var response = await server.ReadResponseAsync(id, ResponseWatchdog);
+        var response = await server.ReadResponseAsync(id, _responseWatchdog);
         McpAssert.ToolError(response, "cancelled");
 
         Assert.True((await server.CallAsync("ping", new { })).TryGetProperty("result", out _));
@@ -248,7 +233,7 @@ public sealed class TransportBudgetTests
         await LetDeadlineElapseAsync(DeadlineMilliseconds);
 
         await gate.Release();
-        var response = await server.ReadResponseAsync(id, ResponseWatchdog);
+        var response = await server.ReadResponseAsync(id, _responseWatchdog);
         McpAssert.ToolError(response, "resource_limit");
 
         // FS-02: a deadline before the commit never touches the original.
@@ -281,10 +266,10 @@ public sealed class TransportBudgetTests
         var queued = await server.SendToolAsync("read_file", new { path = "b.txt" });
         Assert.True((await server.CallAsync("ping", new { })).TryGetProperty("result", out _));
         await server.NotifyAsync("notifications/cancelled", new { requestId = queued });
-        McpAssert.ToolError(await server.ReadResponseAsync(queued, ResponseWatchdog), "cancelled");
+        McpAssert.ToolError(await server.ReadResponseAsync(queued, _responseWatchdog), "cancelled");
 
         await gate.Release();
-        Assert.Equal("alpha", ServerProcess.Payload(await server.ReadResponseAsync(first, ResponseWatchdog)).GetProperty("text").GetString());
+        Assert.Equal("alpha", ServerProcess.Payload(await server.ReadResponseAsync(first, _responseWatchdog)).GetProperty("text").GetString());
 
         // Two calls, one slot, two releases: the second call reaches the body only after
         // the first invocation left it, and both answers are successful reads. Which of the
@@ -297,9 +282,9 @@ public sealed class TransportBudgetTests
         // The next report can only come from the other call: the one slot is still held
         // until the released invocation has left its body.
         Assert.Equal("read_file", await gate.At("read_file"));
-        var firstAnswer = await server.ReadAsync(ResponseWatchdog);
+        var firstAnswer = await server.ReadAsync(_responseWatchdog);
         await gate.Release();
-        var secondAnswer = await server.ReadAsync(ResponseWatchdog);
+        var secondAnswer = await server.ReadAsync(_responseWatchdog);
         var texts = new[] { firstAnswer, secondAnswer }.ToDictionary(
             response => response.GetProperty("id").GetInt32(),
             response => ServerProcess.Payload(response).GetProperty("text").GetString());
@@ -333,8 +318,8 @@ public sealed class TransportBudgetTests
         // are matched by request id instead of by arrival order.
         var responses = new[]
         {
-            await server.ReadAsync(ResponseWatchdog),
-            await server.ReadAsync(ResponseWatchdog)
+            await server.ReadAsync(_responseWatchdog),
+            await server.ReadAsync(_responseWatchdog)
         };
         var texts = responses.ToDictionary(
             response => response.GetProperty("id").GetInt32(),
@@ -354,16 +339,16 @@ public sealed class TransportBudgetTests
         var handshakeFrames = server.ReceivedFrameCount;
 
         var finished = await server.SendToolAsync("read_file", new { path = "file.txt" });
-        Assert.Equal("content", ServerProcess.Payload(await server.ReadResponseAsync(finished, ResponseWatchdog)).GetProperty("text").GetString());
+        Assert.Equal("content", ServerProcess.Payload(await server.ReadResponseAsync(finished, _responseWatchdog)).GetProperty("text").GetString());
 
         // An id nobody is waiting for, then the id of a request that already answered.
         await server.NotifyAsync("notifications/cancelled", new { requestId = 987654 });
         await server.NotifyAsync("notifications/cancelled", new { requestId = finished });
 
         var ping = await server.SendCallAsync("ping", new { });
-        Assert.True((await server.ReadResponseAsync(ping, ResponseWatchdog)).TryGetProperty("result", out _));
+        Assert.True((await server.ReadResponseAsync(ping, _responseWatchdog)).TryGetProperty("result", out _));
         var created = await server.SendToolAsync("create_file", new { path = "after.txt", content = "after" });
-        McpAssert.Success(await server.ReadResponseAsync(created, ResponseWatchdog));
+        McpAssert.Success(await server.ReadResponseAsync(created, _responseWatchdog));
         Assert.Equal("after", await File.ReadAllTextAsync(Path.Combine(sandbox.Workspace, "after.txt")));
 
         // Neither notification produced a frame: the observed frames are exactly the
@@ -402,7 +387,11 @@ public sealed class TransportBudgetTests
             foreach (var extra in rejected)
             {
                 var arguments = new List<string>();
-                if (isDll) arguments.Add(executable);
+                if (isDll)
+                {
+                    arguments.Add(executable);
+                }
+
                 arguments.Add(sandbox.Workspace);
                 arguments.AddRange(extra);
                 var result = await ProcessRunner.RunWithClosedInputAsync(host, arguments);
@@ -427,12 +416,12 @@ public sealed class TransportBudgetTests
         // No params at all: there is no requestId to cancel and nothing to answer.
         await server.SendRawLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\"}");
         var first = await server.SendCallAsync("ping", new { });
-        Assert.True((await server.ReadResponseAsync(first, ResponseWatchdog)).TryGetProperty("result", out _));
+        Assert.True((await server.ReadResponseAsync(first, _responseWatchdog)).TryGetProperty("result", out _));
 
         // Exactly one frame per ping: a reply to the notification would have been consumed
         // by one of these reads instead of the ping's own answer.
         var second = await server.SendCallAsync("ping", new { });
-        Assert.True((await server.ReadResponseAsync(second, ResponseWatchdog)).TryGetProperty("result", out _));
+        Assert.True((await server.ReadResponseAsync(second, _responseWatchdog)).TryGetProperty("result", out _));
         Assert.Equal(2, server.FramesSince(handshakeFrames).Count);
     }
 
@@ -471,7 +460,11 @@ public sealed class TransportBudgetTests
         foreach (var value in rejected)
         {
             var arguments = new List<string>();
-            if (isDll) arguments.Add(executable);
+            if (isDll)
+            {
+                arguments.Add(executable);
+            }
+
             arguments.Add(sandbox.Workspace);
             arguments.Add($"--operationTimeoutMs={value}");
             var result = await ProcessRunner.RunWithClosedInputAsync(host, arguments);
@@ -504,11 +497,11 @@ public sealed class TransportBudgetTests
         await using var server = await ServerProcess.StartAsync(sandbox.Workspace, [$"--operationTimeoutMs={value}"]);
 
         var ping = await server.SendCallAsync("ping", new { });
-        Assert.True((await server.ReadResponseAsync(ping, ResponseWatchdog)).TryGetProperty("result", out _),
+        Assert.True((await server.ReadResponseAsync(ping, _responseWatchdog)).TryGetProperty("result", out _),
             $"--operationTimeoutMs={value} did not answer ping.");
 
         var call = await server.SendToolAsync("read_file", new { path = "file.txt" });
-        var reply = await server.ReadResponseAsync(call, ResponseWatchdog);
+        var reply = await server.ReadResponseAsync(call, _responseWatchdog);
         Assert.True(reply.TryGetProperty("result", out var result),
             $"--operationTimeoutMs={value} did not answer tools/call: {reply}");
         Assert.True(result.TryGetProperty("isError", out var isError)
@@ -579,12 +572,12 @@ public sealed class TransportBudgetTests
         // by the same minimal error this test already measures; the session still opens.
         await server.SendRawLineAsync(
             "{\"jsonrpc\":\"2.0\",\"id\":4141,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"tests\",\"version\":\"1\"}}}");
-        var initializeLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        var initializeLine = await server.ReadRawLineAsync(_responseWatchdog);
         AssertWholeFrame(initializeLine, 4141, budget, floor);
         await server.SendRawLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
 
         await server.SendRawLineAsync(ToolCallFrame(readId, "read_file", new { path = "quotes.txt" }));
-        var readLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        var readLine = await server.ReadRawLineAsync(_responseWatchdog);
         AssertWholeFrame(readLine, readId, budget, floor);
         var read = ServerProcess.JsonDocumentParse(readLine);
         if (read.TryGetProperty("result", out var readResult))
@@ -607,7 +600,7 @@ public sealed class TransportBudgetTests
         }
 
         await server.SendRawLineAsync("{\"jsonrpc\":\"2.0\",\"id\":" + listId + ",\"method\":\"tools/list\",\"params\":{}}");
-        var listLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        var listLine = await server.ReadRawLineAsync(_responseWatchdog);
         AssertWholeFrame(listLine, listId, budget, floor);
         var list = ServerProcess.JsonDocumentParse(listLine);
         // tools/list has no content envelope at all, so there is nothing an isError result
@@ -622,7 +615,7 @@ public sealed class TransportBudgetTests
         var hugeMethod = new string('x', 4000);
         await server.SendRawLineAsync(
             "{\"jsonrpc\":\"2.0\",\"id\":" + methodId + ",\"method\":\"" + hugeMethod + "\",\"params\":{}}");
-        var methodLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        var methodLine = await server.ReadRawLineAsync(_responseWatchdog);
         AssertWholeFrame(methodLine, methodId, budget, floor);
         Assert.DoesNotContain(hugeMethod, methodLine, StringComparison.Ordinal);
         McpAssert.ProtocolError(ServerProcess.JsonDocumentParse(methodLine), -32603);
@@ -630,7 +623,7 @@ public sealed class TransportBudgetTests
         // Three replacements later the session still answers, and the ping frame is bounded
         // by the same rule as every other frame.
         await server.SendRawLineAsync("{\"jsonrpc\":\"2.0\",\"id\":" + pingId + ",\"method\":\"ping\",\"params\":{}}");
-        var pingLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        var pingLine = await server.ReadRawLineAsync(_responseWatchdog);
         AssertWholeFrame(pingLine, pingId, budget, floor);
     }
 
@@ -696,7 +689,7 @@ public sealed class TransportBudgetTests
     /// <summary>
     /// A frame the transport refused carries no request id: the refusal must not be
     /// attributed to a request, and the answer must not invent one. The FS-07 contract
-    /// (docs/07: <c>-32600 с id=null</c>) is an explicit null member, not an omitted one:
+    /// (docs/07: <c>-32600 with id=null</c>) is an explicit null member, not an omitted one:
     /// a client matches an error to "no id" by that member, and the same shape is required
     /// for the parse error of FS-13.
     /// </summary>
@@ -715,10 +708,25 @@ public sealed class TransportBudgetTests
     /// </summary>
     private static async Task LetDeadlineElapseAsync(long milliseconds)
     {
-        var until = Environment.TickCount64 + milliseconds + (long)DeadlineTimerSlack.TotalMilliseconds;
+        var until = Environment.TickCount64 + milliseconds + (long)_deadlineTimerSlack.TotalMilliseconds;
         while (Environment.TickCount64 < until)
         {
             await Task.Delay(25);
         }
     }
+
+    /// <summary>
+    /// Extra wall-clock time after <see cref="DeadlineMilliseconds"/>.
+    /// <c>CancelAfter</c> is a timer on the server process. A parallel suite has
+    /// delayed that timer by more than a small multiple of a 300 ms budget; releasing
+    /// then lets the write commit, and the case fails even though a fired deadline
+    /// would have kept the original bytes. Run alone, the timer is on time.
+    /// </summary>
+    private static readonly TimeSpan _deadlineTimerSlack = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Failure deadline for responses that are only produced after the test releases a
+    /// barrier the test itself holds. It is a watchdog, not a budget for the server.
+    /// </summary>
+    private static readonly TimeSpan _responseWatchdog = TimeSpan.FromSeconds(20);
 }

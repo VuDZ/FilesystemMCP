@@ -13,16 +13,18 @@ namespace FilesystemMcp.Tests.Infrastructure;
 internal sealed class ProcessGate : IAsyncDisposable
 {
     private const string DefaultPoints = "BeforeLock,LockContended,BeforeCommit";
-    private readonly string _name = "filesystemmcp-tests-" + Guid.NewGuid().ToString("N");
-    private readonly string _points;
-    private readonly NamedPipeServerStream _pipe;
-    private StreamReader? _reader;
-    private StreamWriter? _writer;
 
     internal ProcessGate(string? points = null)
     {
         _points = points ?? DefaultPoints;
         _pipe = new NamedPipeServerStream(_name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _reader?.Dispose();
+        _writer?.Dispose();
+        await _pipe.DisposeAsync();
     }
 
     internal async Task<ServerProcess> Start(string workspace, string[]? options = null)
@@ -45,10 +47,9 @@ internal sealed class ProcessGate : IAsyncDisposable
     /// <summary>Releases the barrier with a command the host rejects, so the host throws.</summary>
     internal Task Abort() => _writer!.WriteLineAsync("abort");
 
-    public async ValueTask DisposeAsync()
-    {
-        _reader?.Dispose();
-        _writer?.Dispose();
-        await _pipe.DisposeAsync();
-    }
+    private readonly string _name = "filesystemmcp-tests-" + Guid.NewGuid().ToString("N");
+    private readonly string _points;
+    private readonly NamedPipeServerStream _pipe;
+    private StreamReader? _reader;
+    private StreamWriter? _writer;
 }

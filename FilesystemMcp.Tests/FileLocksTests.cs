@@ -419,8 +419,8 @@ public sealed class FileLocksTests
             beforeBackoff: null,
             time,
             (delay, _) => { delays.Add(delay); return Task.CompletedTask; },
-            CancellationToken.None,
-            isRetryable: _ => true));
+            isRetryable: _ => true,
+            cancellationToken: CancellationToken.None));
         Assert.Equal(2, attempts);
         var wait = Assert.Single(delays);
         Assert.True(wait <= TimeSpan.FromMilliseconds(20), $"wait must be clamped to the remaining budget but was {wait.TotalMilliseconds} ms");
@@ -438,8 +438,8 @@ public sealed class FileLocksTests
             beforeBackoff: null,
             time,
             (delay, _) => { delays.Add(delay); return Task.CompletedTask; },
-            CancellationToken.None,
-            isRetryable: _ => true));
+            isRetryable: _ => true,
+            cancellationToken: CancellationToken.None));
         Assert.Equal(1, attempts);
         Assert.Empty(delays);
     }

@@ -376,44 +376,6 @@ public sealed class ToolErrorsTests
         Assert.True((await server.CallAsync("ping", new { })).TryGetProperty("result", out _));
     }
 
-    private static async Task<string> WaitForLogAsync(string directory, string expected)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        var log = string.Empty;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            log = ReadLogDirectory(directory);
-            if (log.Contains(expected, StringComparison.Ordinal))
-            {
-                return log;
-            }
-
-            await Task.Delay(25);
-        }
-
-        Assert.Fail($"Timed out waiting for '{expected}' in '{directory}'. Observed: {log}");
-        return log;
-    }
-
-    /// <summary>Reads a live log file with the sharing the sink grants its readers.</summary>
-    private static string ReadLogDirectory(string directory)
-    {
-        if (!Directory.Exists(directory))
-        {
-            return string.Empty;
-        }
-
-        var builder = new System.Text.StringBuilder();
-        foreach (var path in Directory.EnumerateFiles(directory))
-        {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            builder.Append(reader.ReadToEnd()).Append('\n');
-        }
-
-        return builder.ToString();
-    }
-
     [Fact, Trait("Status", "Baseline")]
     public async Task InjectedFaultIsCorrelatedAndLeavesNoPartialWrite()
     {
@@ -546,5 +508,43 @@ public sealed class ToolErrorsTests
         var reply = await server.CallAsync("read_file", new { path = "missing.txt" });
         Assert.Equal(-32601, reply.GetProperty("error").GetProperty("code").GetInt32());
         Assert.False(reply.TryGetProperty("result", out _));
+    }
+
+    private static async Task<string> WaitForLogAsync(string directory, string expected)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        var log = string.Empty;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            log = ReadLogDirectory(directory);
+            if (log.Contains(expected, StringComparison.Ordinal))
+            {
+                return log;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.Fail($"Timed out waiting for '{expected}' in '{directory}'. Observed: {log}");
+        return log;
+    }
+
+    /// <summary>Reads a live log file with the sharing the sink grants its readers.</summary>
+    private static string ReadLogDirectory(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var path in Directory.EnumerateFiles(directory))
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            builder.Append(reader.ReadToEnd()).Append('\n');
+        }
+
+        return builder.ToString();
     }
 }

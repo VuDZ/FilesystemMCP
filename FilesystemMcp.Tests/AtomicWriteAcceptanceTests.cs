@@ -22,7 +22,13 @@ public sealed class AtomicWriteAcceptanceTests
         var path = sandbox.Write("file.txt", "old\r\ntext");
         var foreign = sandbox.Write(".filesystemmcp-unknown.tmp", "leave alone");
         var original = File.ReadAllBytes(path);
-        var policy = Policy(sandbox, point => { if (point.ToString() == stage) throw new IOException("injected storage fault"); });
+        var policy = Policy(sandbox, point =>
+        {
+            if (point.ToString() == stage)
+            {
+                throw new IOException("injected storage fault");
+            }
+        });
         await Assert.ThrowsAsync<IOException>(() => Replace(policy, new string('x', 150000)));
         Assert.Equal(original, File.ReadAllBytes(path));
         Assert.Equal("leave alone", File.ReadAllText(foreign));
@@ -39,7 +45,13 @@ public sealed class AtomicWriteAcceptanceTests
         var path = sandbox.Write("file.txt", "old\r\ntext");
         var original = File.ReadAllBytes(path);
         using var cancelled = new CancellationTokenSource();
-        var policy = Policy(sandbox, point => { if (point.ToString() == stage) cancelled.Cancel(); });
+        var policy = Policy(sandbox, point =>
+        {
+            if (point.ToString() == stage)
+            {
+                cancelled.Cancel();
+            }
+        });
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Replace(policy, new string('x', 150000), cancelled.Token));
         Assert.Equal(original, File.ReadAllBytes(path));
         Assert.Empty(Temps(sandbox));
@@ -91,8 +103,16 @@ public sealed class AtomicWriteAcceptanceTests
         var commits = 0;
         var policy = Policy(sandbox, point =>
         {
-            if (point == AtomicWritePoint.AfterCommit) commits++;
-            if (point.ToString() == stage) { cancelled.Cancel(); throw new IOException("late diagnostic/cleanup failure"); }
+            if (point == AtomicWritePoint.AfterCommit)
+            {
+                commits++;
+            }
+
+            if (point.ToString() == stage)
+            {
+                cancelled.Cancel();
+                throw new IOException("late diagnostic/cleanup failure");
+            }
         });
         var result = await Replace(policy, "new", cancelled.Token);
         Assert.Equal("new\r\ntext", File.ReadAllText(path));
@@ -128,9 +148,20 @@ public sealed class AtomicWriteAcceptanceTests
                 WriteChunk = (stream, bytes, offset, count) =>
                 {
                     stream.Write(bytes, offset, flush ? count : Math.Min(8, count));
-                    if (!flush) throw new IOException("Injected disk full", unchecked((int)0x80070070));
+                    if (!flush)
+                    {
+                        throw new IOException("Injected disk full", unchecked((int)0x80070070));
+                    }
                 },
-                Flush = stream => { if (flush) throw new IOException("Injected disk full", unchecked((int)0x80070070)); stream.Flush(true); }
+                Flush = stream =>
+                {
+                    if (flush)
+                    {
+                        throw new IOException("Injected disk full", unchecked((int)0x80070070));
+                    }
+
+                    stream.Flush(true);
+                }
             }
         };
         await Assert.ThrowsAsync<IOException>(() => Replace(policy, new string('x', 150000)));
@@ -173,7 +204,13 @@ public sealed class AtomicWriteAcceptanceTests
     {
         using var sandbox = new Sandbox();
         var path = sandbox.Write("file.txt", "old\r\ntext");
-        var policy = Policy(sandbox, point => { if (point == AtomicWritePoint.BeforeCommit) File.WriteAllText(path, "external\r\n", Sandbox.Utf8); });
+        var policy = Policy(sandbox, point =>
+        {
+            if (point == AtomicWritePoint.BeforeCommit)
+            {
+                File.WriteAllText(path, "external\r\n", Sandbox.Utf8);
+            }
+        });
         var error = await Assert.ThrowsAsync<MutationException>(() => Replace(policy, "new"));
         Assert.Equal("hash_conflict", error.Code);
         Assert.Equal("external\r\n", File.ReadAllText(path));
@@ -187,7 +224,11 @@ public sealed class AtomicWriteAcceptanceTests
         var path = sandbox.Write("file.txt", "old\r\ntext");
         var policy = Policy(sandbox, point =>
         {
-            if (point != AtomicWritePoint.BeforeCommit) return;
+            if (point != AtomicWritePoint.BeforeCommit)
+            {
+                return;
+            }
+
             var security = new FileInfo(path).GetAccessControl(AccessControlSections.Access);
             security.SetAccessRuleProtection(true, true);
             new FileInfo(path).SetAccessControl(security);
@@ -211,7 +252,13 @@ public sealed class AtomicWriteAcceptanceTests
         var first = Replace(Policy(sandbox, point =>
         {
             if (point == AtomicWritePoint.BeforeCommit)
-            { ready.Set(); if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Writer release watchdog"); }
+            {
+                ready.Set();
+                if (!release.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    throw new TimeoutException("Writer release watchdog");
+                }
+            }
         }), "first");
         Assert.True(ready.Wait(TimeSpan.FromSeconds(5)));
         try
@@ -219,15 +266,38 @@ public sealed class AtomicWriteAcceptanceTests
             var ownedByFirst = Assert.Single(Temps(sandbox));
             var second = Replace(Policy(sandbox, point =>
             {
-                if (point != AtomicWritePoint.LockContended) return;
-                if (cancel) cancelled.Cancel(); else throw new IOException("Lock wait dependency fault");
+                if (point != AtomicWritePoint.LockContended)
+                {
+                    return;
+                }
+
+                if (cancel)
+                {
+                    cancelled.Cancel();
+                }
+                else
+                {
+                    throw new IOException("Lock wait dependency fault");
+                }
             }), "second", cancelled.Token);
-            if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
-            else await Assert.ThrowsAsync<IOException>(() => second);
+            if (cancel)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<IOException>(() => second);
+            }
+
             Assert.Equal("old\r\ntext", File.ReadAllText(path));
             Assert.Equal([ownedByFirst], Temps(sandbox));
         }
-        finally { release.Set(); await first; }
+        finally
+        {
+            release.Set();
+            await first;
+        }
+
         Assert.Equal("first\r\ntext", File.ReadAllText(path));
         Assert.Empty(Temps(sandbox));
     }
@@ -297,7 +367,10 @@ public sealed class AtomicWriteAcceptanceTests
             Assert.Equal(original, File.ReadAllBytes(path));
             Assert.Empty(Temps(sandbox));
         }
-        finally { File.SetAttributes(path, FileAttributes.Normal); }
+        finally
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
     }
 
     [WindowsFact, SupportedOSPlatform("windows")]
@@ -318,7 +391,11 @@ public sealed class AtomicWriteAcceptanceTests
             Assert.Equal(before, new FileInfo(path).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access));
             Assert.Empty(Temps(sandbox));
         }
-        finally { security.RemoveAccessRuleSpecific(deny); new FileInfo(path).SetAccessControl(security); }
+        finally
+        {
+            security.RemoveAccessRuleSpecific(deny);
+            new FileInfo(path).SetAccessControl(security);
+        }
     }
 
     [UnixFact, SupportedOSPlatform("linux"), SupportedOSPlatform("macos")]
@@ -352,7 +429,10 @@ public sealed class AtomicWriteAcceptanceTests
             Assert.Equal(mode, File.GetUnixFileMode(path));
             Assert.Empty(Temps(sandbox));
         }
-        finally { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+        finally
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
     }
 
     [Fact]
@@ -379,7 +459,12 @@ public sealed class AtomicWriteAcceptanceTests
         {
             await new FileOperationsService(sandbox.Workspace).ReplaceInFileAsync("file.txt", "old", "new", FileTextHelper.ComputeContentHashes(FileTextHelper.NormalizeLineEndings(old)).Sha256);
         }
-        finally { finished.Set(); await observer.WaitAsync(TimeSpan.FromSeconds(5)); }
+        finally
+        {
+            finished.Set();
+            await observer.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
         samples.Add(File.ReadAllText(path));
         Assert.Contains(old, samples); Assert.Contains(next, samples);
         Assert.All(samples, sample => Assert.True(sample == old || sample == next, "Observed partial/truncated file"));
@@ -426,12 +511,50 @@ public sealed class AtomicWriteAcceptanceTests
         Assert.Equal("old", File.ReadAllText(outside));
     }
 
+    [Fact]
+    public async Task AtomicReplacementLeavesExternalHardLinkInodeUntouched()
+    {
+        using var sandbox = new Sandbox();
+        var path = sandbox.Write("file.txt", "old\r\ntext");
+        var external = Path.Combine(sandbox.Outside, "hard.txt");
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.True(CreateHardLink(external, path, IntPtr.Zero));
+        }
+        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            Assert.Equal(0, Link(path, external));
+        }
+        else
+        {
+            throw new PlatformNotSupportedException("Hard-link capability requires a supported OS lane.");
+        }
+
+        var oldIdentity = NativePath.GetFileIdentity(path);
+        await Replace(new PathPolicy(sandbox.Workspace), "new");
+        Assert.Equal("old\r\ntext", File.ReadAllText(external));
+        Assert.Equal(oldIdentity, NativePath.GetFileIdentity(external));
+        Assert.NotEqual(oldIdentity, NativePath.GetFileIdentity(path));
+    }
+
     private static async Task ProcessRace(bool create, bool alias, bool shortRoot = false, bool missingParents = false)
     {
         using var sandbox = new Sandbox();
-        if (!missingParents) Directory.CreateDirectory(Path.Combine(sandbox.Workspace, "real"));
-        if (!create) sandbox.Write("real/file.txt", "old");
-        if (alias) await sandbox.JunctionAsync("alias", Path.Combine(sandbox.Workspace, "real"));
+        if (!missingParents)
+        {
+            Directory.CreateDirectory(Path.Combine(sandbox.Workspace, "real"));
+        }
+
+        if (!create)
+        {
+            sandbox.Write("real/file.txt", "old");
+        }
+
+        if (alias)
+        {
+            await sandbox.JunctionAsync("alias", Path.Combine(sandbox.Workspace, "real"));
+        }
+
         await using var firstGate = new ProcessGate();
         await using var secondGate = new ProcessGate();
         await using var first = await firstGate.Start(sandbox.Workspace);
@@ -453,22 +576,6 @@ public sealed class AtomicWriteAcceptanceTests
         McpAssert.ToolError(conflict, create ? "file_exists" : "hash_conflict");
         Assert.Equal("first", File.ReadAllText(Path.Combine(sandbox.Workspace, "real/file.txt")));
         Assert.Empty(Directory.GetFiles(Path.Combine(sandbox.Workspace, "real"), ".filesystemmcp-*.tmp"));
-    }
-
-    [Fact]
-    public async Task AtomicReplacementLeavesExternalHardLinkInodeUntouched()
-    {
-        using var sandbox = new Sandbox();
-        var path = sandbox.Write("file.txt", "old\r\ntext");
-        var external = Path.Combine(sandbox.Outside, "hard.txt");
-        if (OperatingSystem.IsWindows()) Assert.True(CreateHardLink(external, path, IntPtr.Zero));
-        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) Assert.Equal(0, Link(path, external));
-        else throw new PlatformNotSupportedException("Hard-link capability requires a supported OS lane.");
-        var oldIdentity = NativePath.GetFileIdentity(path);
-        await Replace(new PathPolicy(sandbox.Workspace), "new");
-        Assert.Equal("old\r\ntext", File.ReadAllText(external));
-        Assert.Equal(oldIdentity, NativePath.GetFileIdentity(external));
-        Assert.NotEqual(oldIdentity, NativePath.GetFileIdentity(path));
     }
 
     private static PathPolicy Policy(Sandbox sandbox, Action<AtomicWritePoint> hook) => new(sandbox.Workspace)

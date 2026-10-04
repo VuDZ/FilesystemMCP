@@ -19,9 +19,16 @@ public sealed class SymlinkFactAttribute : FactAttribute
         }
         finally
         {
-            if (Directory.Exists(Path.Combine(root, "dirlink"))) Directory.Delete(Path.Combine(root, "dirlink"));
+            if (Directory.Exists(Path.Combine(root, "dirlink")))
+            {
+                Directory.Delete(Path.Combine(root, "dirlink"));
+            }
+
             File.Delete(Path.Combine(root, "link"));
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 }

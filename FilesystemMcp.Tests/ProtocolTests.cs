@@ -535,12 +535,10 @@ public sealed class ProtocolTests
         }
     }
 
-    private static void AssertExplicitNullId(string raw)
-    {
+    private static void AssertExplicitNullId(string raw) =>
         Assert.True(
             raw.Contains("\"id\":null", StringComparison.Ordinal) || raw.Contains("\"id\": null", StringComparison.Ordinal),
             "Null id was omitted from the frame: " + raw);
-    }
 
     private static async Task AssertSessionStillAnswersPing(ServerProcess server)
     {

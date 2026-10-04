@@ -9,29 +9,21 @@ namespace FilesystemMcp.TestHost;
 
 internal static class Program
 {
-    /// <summary>
-    /// Hang watchdog for one barrier command. A test may legally hold the barrier
-    /// across a stdio round-trip (response watchdog 20s) and, for the parked
-    /// deadline, across the budget plus timer slack. The previous 10s budget
-    /// expired under parallel load while that test was still inside its own
-    /// watchdog: the host aborted a live invocation and the assertion failed
-    /// even though the server had not misbehaved. Isolated runs never waited
-    /// that long. This is a hang detector, not a performance budget.
-    /// </summary>
-    private static readonly TimeSpan BarrierCommandTimeout = TimeSpan.FromSeconds(90);
-
-    /// <summary>Pipe text is raw UTF-8. A BOM on the first line is not part of the protocol.</summary>
-    private static readonly Encoding PipeEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-
     public static async Task<int> Main(string[] args)
     {
         // Set in the child after CLR startup; a host can reset inherited flags.
-        if (OperatingSystem.IsWindows()) SetErrorMode(GetErrorMode() | 0x0002);
+        if (OperatingSystem.IsWindows())
+        {
+            SetErrorMode(GetErrorMode() | 0x0002);
+        }
+
         try
         {
             // Infrastructure self-test, independent of any production defect.
             if (args is ["--test-host-crash-probe"])
+            {
                 throw new InvalidOperationException("Test host crash-capture probe");
+            }
 
             // Fault/barrier configuration belongs to this protected host only.
             // The production entry point never reads these environment variables.
@@ -45,10 +37,17 @@ internal static class Program
                 {
                     Hook = point =>
                     {
-                        if (!points.Contains(point.ToString())) return;
+                        if (!points.Contains(point.ToString()))
+                        {
+                            return;
+                        }
+
                         writer.WriteLine(point.ToString());
-                        var command = reader.ReadLineAsync().WaitAsync(BarrierCommandTimeout).GetAwaiter().GetResult();
-                        if (command != "continue") throw new IOException("Test host barrier did not release normally.");
+                        var command = reader.ReadLineAsync().WaitAsync(_barrierCommandTimeout).GetAwaiter().GetResult();
+                        if (command != "continue")
+                        {
+                            throw new IOException("Test host barrier did not release normally.");
+                        }
                     }
                 };
             }
@@ -77,8 +76,15 @@ internal static class Program
             var failure = exception is TargetInvocationException { InnerException: { } inner } ? inner : exception;
             // Preserve EOF/nonzero exit and the original exception. Do not invent MCP
             // replies or turn failures into success; keep Windows crash UI out of tests.
-            try { await Console.Error.WriteLineAsync("TEST HOST: server entry point failed:\n" + failure); }
-            catch (IOException) { /* Parent may already have closed its error pipe. */ }
+            try
+            {
+                await Console.Error.WriteLineAsync("TEST HOST: server entry point failed:\n" + failure);
+            }
+            catch (IOException)
+            {
+                // Parent may already have closed its error pipe.
+            }
+
             return 1;
         }
     }
@@ -98,10 +104,86 @@ internal static class Program
         var points = (Environment.GetEnvironmentVariable("FS_TEST_BARRIER_POINTS") ?? "read_file").Split(',');
         global::FilesystemMcp.TestHooks.ToolExecutionBarrier = toolName =>
         {
-            if (!points.Contains(toolName)) return;
+            if (!points.Contains(toolName))
+            {
+                return;
+            }
+
             barrier.Park(BarrierReport(toolName));
         };
     }
+
+    private static NamedPipeClientStream? ConnectBarrierPipe(string variable, string? suffix = null)
+    {
+        if (Environment.GetEnvironmentVariable(variable) is not { Length: > 0 } name)
+        {
+            return null;
+        }
+
+        var pipe = new NamedPipeClientStream(".", name + suffix, PipeDirection.InOut);
+        try
+        {
+            // Synchronous connect: an async connect completed through the thread pool
+            // has the same false timeout as the old barrier read when the machine is
+            // busy starting several TestHost processes at once.
+            pipe.Connect((int)_barrierCommandTimeout.TotalMilliseconds);
+            return pipe;
+        }
+        catch
+        {
+            pipe.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// <c>{"point":"&lt;toolName&gt;","tool":"&lt;toolName&gt;"}</c>. Written with
+    /// <see cref="Utf8JsonWriter"/> because this host runs with reflection-based
+    /// serialization disabled, exactly like the production server.
+    /// </summary>
+    private static string BarrierReport(string toolName)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("point", toolName);
+            writer.WriteString("tool", toolName);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    /// <summary>Only the exact <c>{"command":"continue"}</c> message proceeds.</summary>
+    private static bool IsContinue(string? line)
+    {
+        if (line is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("command", out var command)
+                && command.ValueKind == JsonValueKind.String
+                && command.GetString() == "continue";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern uint GetErrorMode();
+
+    [SupportedOSPlatform("windows")]
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern uint SetErrorMode(uint mode);
 
     /// <summary>
     /// Byte side of the tool barrier. One background thread blocks in
@@ -115,18 +197,10 @@ internal static class Program
     /// </summary>
     private sealed class ToolBarrier
     {
-        private readonly object _writeLock = new();
-        private readonly object _inbox = new();
-        private readonly StreamWriter _writer;
-        private readonly Queue<string> _commands = new();
-        private int _nextTicket;
-        private int _nextServe;
-        private bool _closed;
-
         public ToolBarrier(NamedPipeClientStream reports, NamedPipeClientStream commands)
         {
-            var reader = new StreamReader(commands, PipeEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
-            _writer = new StreamWriter(reports, PipeEncoding, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            var reader = new StreamReader(commands, _pipeEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            _writer = new StreamWriter(reports, _pipeEncoding, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
             var thread = new Thread(() => Read(reader))
             {
                 IsBackground = true,
@@ -157,7 +231,7 @@ internal static class Program
         /// </summary>
         private string? Take(int ticket)
         {
-            var deadline = Environment.TickCount64 + (long)BarrierCommandTimeout.TotalMilliseconds;
+            var deadline = Environment.TickCount64 + (long)_barrierCommandTimeout.TotalMilliseconds;
             lock (_inbox)
             {
                 while (ticket != _nextServe || _commands.Count == 0)
@@ -211,73 +285,27 @@ internal static class Program
                 }
             }
         }
-    }
 
-    private static NamedPipeClientStream? ConnectBarrierPipe(string variable, string? suffix = null)
-    {
-        if (Environment.GetEnvironmentVariable(variable) is not { Length: > 0 } name)
-        {
-            return null;
-        }
-
-        var pipe = new NamedPipeClientStream(".", name + suffix, PipeDirection.InOut);
-        try
-        {
-            // Synchronous connect: an async connect completed through the thread pool
-            // has the same false timeout as the old barrier read when the machine is
-            // busy starting several TestHost processes at once.
-            pipe.Connect((int)BarrierCommandTimeout.TotalMilliseconds);
-            return pipe;
-        }
-        catch
-        {
-            pipe.Dispose();
-            throw;
-        }
+        private readonly object _writeLock = new();
+        private readonly object _inbox = new();
+        private readonly StreamWriter _writer;
+        private readonly Queue<string> _commands = new();
+        private int _nextTicket;
+        private int _nextServe;
+        private bool _closed;
     }
 
     /// <summary>
-    /// <c>{"point":"&lt;toolName&gt;","tool":"&lt;toolName&gt;"}</c>. Written with
-    /// <see cref="Utf8JsonWriter"/> because this host runs with reflection-based
-    /// serialization disabled, exactly like the production server.
+    /// Hang watchdog for one barrier command. A test may legally hold the barrier
+    /// across a stdio round-trip (response watchdog 20s) and, for the parked
+    /// deadline, across the budget plus timer slack. The previous 10s budget
+    /// expired under parallel load while that test was still inside its own
+    /// watchdog: the host aborted a live invocation and the assertion failed
+    /// even though the server had not misbehaved. Isolated runs never waited
+    /// that long. This is a hang detector, not a performance budget.
     /// </summary>
-    private static string BarrierReport(string toolName)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("point", toolName);
-            writer.WriteString("tool", toolName);
-            writer.WriteEndObject();
-        }
+    private static readonly TimeSpan _barrierCommandTimeout = TimeSpan.FromSeconds(90);
 
-        return Encoding.UTF8.GetString(buffer.ToArray());
-    }
-
-    /// <summary>Only the exact <c>{"command":"continue"}</c> message proceeds.</summary>
-    private static bool IsContinue(string? line)
-    {
-        if (line is null) return false;
-        try
-        {
-            using var document = JsonDocument.Parse(line);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("command", out var command)
-                && command.ValueKind == JsonValueKind.String
-                && command.GetString() == "continue";
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    [SupportedOSPlatform("windows")]
-    [DllImport("kernel32.dll", ExactSpelling = true)]
-    private static extern uint GetErrorMode();
-
-    [SupportedOSPlatform("windows")]
-    [DllImport("kernel32.dll", ExactSpelling = true)]
-    private static extern uint SetErrorMode(uint mode);
+    /// <summary>Pipe text is raw UTF-8. A BOM on the first line is not part of the protocol.</summary>
+    private static readonly Encoding _pipeEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 }

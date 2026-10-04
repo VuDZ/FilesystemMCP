@@ -224,7 +224,7 @@ public sealed class LoggingTests
     public void FormattingFailureDoesNotEscapeAndLaterRecordsStillFlow()
     {
         using var scope = new InProcessLogScope();
-        McpLogger.FailNextWrite = new McpLogger.LogFailureInjection(
+        McpLogger.FailNextWrite = new LogFailureInjection(
             McpLogger.FailureFormat,
             _ => throw new InvalidOperationException("injected format failure"));
         McpLogger.Error("first-record", new InvalidOperationException("payload"));
@@ -249,7 +249,7 @@ public sealed class LoggingTests
 
             // A writer-stage failure loses that record: the logger must count it, retire the
             // sink and report the fallback exactly once instead of failing the caller.
-            McpLogger.FailNextWrite = new McpLogger.LogFailureInjection(
+            McpLogger.FailNextWrite = new LogFailureInjection(
                 McpLogger.FailureWrite,
                 _ => throw new IOException("injected write failure"));
             McpLogger.Info("first-record");
@@ -367,7 +367,7 @@ public sealed class LoggingTests
     {
         using var scope = new InProcessLogScope();
         McpLogger.ErrorWriter = new ThrowingWriter();
-        McpLogger.FailNextWrite = new McpLogger.LogFailureInjection(McpLogger.FailureStderr);
+        McpLogger.FailNextWrite = new LogFailureInjection(McpLogger.FailureStderr);
         McpLogger.Error("first-record");
         McpLogger.Info("second-record");
         // A healthy file sink never consults stderr, so the record still lands in the
@@ -391,7 +391,7 @@ public sealed class LoggingTests
             McpLogger.StartWith(null, occupied);
             Assert.False(McpLogger.IsFileSinkEnabled);
 
-            McpLogger.FailNextWrite = new McpLogger.LogFailureInjection(McpLogger.FailureStderr);
+            McpLogger.FailNextWrite = new LogFailureInjection(McpLogger.FailureStderr);
             McpLogger.Info("first-stderr-record");
             Poll(
                 () => McpLogger.FailNextWrite is null && McpLogger.DroppedCount >= 1,
@@ -617,111 +617,6 @@ public sealed class LoggingTests
 
     // ---- helpers ----
 
-    /// <summary>Starts the real file sink in a private directory and restores global state on exit.</summary>
-    private sealed class InProcessLogScope : IDisposable
-    {
-        private readonly StringWriter _stderr = NewThreadSafeStderr();
-
-        internal InProcessLogScope()
-        {
-            Directory = NewTempDirectory("fs06-inprocess");
-            FilePath = Path.Combine(Directory, "mcplog-scope.log");
-            McpLogger.ResetForTests();
-            McpLogger.ErrorWriter = _stderr;
-            McpLogger.StartWith(new LogFileSink(Directory, "mcplog-scope.log"), Directory);
-        }
-
-        internal string Directory { get; }
-
-        internal string FilePath { get; }
-
-        internal string[] FileLines => FileText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-        internal string FileText => ReadShared(FilePath);
-
-        internal void WaitForFile(Func<string, bool> predicate) =>
-            Poll(
-                () => FileLines.Any(predicate),
-                TimeSpan.FromSeconds(5),
-                $"a record in '{FilePath}'. Enabled={McpLogger.IsFileSinkEnabled} " +
-                $"Dropped={McpLogger.DroppedCount} Text=[{FileText}] " +
-                $"Stderr=[{string.Join(" / ", StderrLines(_stderr))}]");
-
-        internal void WaitForStderr(Func<string, bool> predicate) =>
-            Poll(() => StderrLines(_stderr).Any(predicate), TimeSpan.FromSeconds(5), "a record on the stderr fallback");
-
-        public void Dispose()
-        {
-            McpLogger.ResetForTests();
-            DeleteDirectory(Directory);
-        }
-    }
-
-    /// <summary>
-    /// A stderr fallback target that is safe to read while the server writes to it.
-    /// <see cref="StringWriter"/> is not thread-safe, and since FS-07 the logger records from
-    /// worker threads: the poll loops below read the buffer while a tool running on another
-    /// thread writes, which surfaced as an <see cref="ArgumentOutOfRangeException"/> from
-    /// <c>StringBuilder.ToString</c> — a harness race, not a logging defect.
-    /// </summary>
-    /// <remarks>
-    /// A subclass rather than <see cref="TextWriter.Synchronized"/>: that returns an opaque
-    /// <c>SyncTextWriter</c>, and these tests read the buffer directly through
-    /// <see cref="StderrLines"/>. Both sides must take the same lock — reading alone is not
-    /// enough, because the write itself is what tears the buffer while a reader copies it —
-    /// so every write entry point the logger uses is synchronized on the same monitor.
-    /// </remarks>
-    private sealed class ThreadSafeStringWriter : StringWriter
-    {
-        public override string ToString()
-        {
-            lock (GetStringBuilder())
-            {
-                return base.ToString();
-            }
-        }
-
-        public override void Write(string? value)
-        {
-            lock (GetStringBuilder())
-            {
-                base.Write(value);
-            }
-        }
-
-        public override void Write(char value)
-        {
-            lock (GetStringBuilder())
-            {
-                base.Write(value);
-            }
-        }
-
-        public override void WriteLine(string? value)
-        {
-            lock (GetStringBuilder())
-            {
-                base.WriteLine(value);
-            }
-        }
-
-        public override void WriteLine()
-        {
-            lock (GetStringBuilder())
-            {
-                base.WriteLine();
-            }
-        }
-
-        public override void Write(char[] buffer, int index, int count)
-        {
-            lock (GetStringBuilder())
-            {
-                base.Write(buffer, index, count);
-            }
-        }
-    }
-
     private static StringWriter NewThreadSafeStderr() => new ThreadSafeStringWriter();
 
     private static string[] StderrLines(StringWriter writer) =>
@@ -841,6 +736,111 @@ public sealed class LoggingTests
         }
 
         Assert.Fail("Timed out waiting for " + what + ".");
+    }
+
+    /// <summary>Starts the real file sink in a private directory and restores global state on exit.</summary>
+    private sealed class InProcessLogScope : IDisposable
+    {
+        internal string Directory { get; }
+
+        internal string FilePath { get; }
+
+        internal string[] FileLines => FileText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        internal string FileText => ReadShared(FilePath);
+
+        internal InProcessLogScope()
+        {
+            Directory = NewTempDirectory("fs06-inprocess");
+            FilePath = Path.Combine(Directory, "mcplog-scope.log");
+            McpLogger.ResetForTests();
+            McpLogger.ErrorWriter = _stderr;
+            McpLogger.StartWith(new LogFileSink(Directory, "mcplog-scope.log"), Directory);
+        }
+
+        public void Dispose()
+        {
+            McpLogger.ResetForTests();
+            DeleteDirectory(Directory);
+        }
+
+        internal void WaitForFile(Func<string, bool> predicate) =>
+            Poll(
+                () => FileLines.Any(predicate),
+                TimeSpan.FromSeconds(5),
+                $"a record in '{FilePath}'. Enabled={McpLogger.IsFileSinkEnabled} " +
+                $"Dropped={McpLogger.DroppedCount} Text=[{FileText}] " +
+                $"Stderr=[{string.Join(" / ", StderrLines(_stderr))}]");
+
+        internal void WaitForStderr(Func<string, bool> predicate) =>
+            Poll(() => StderrLines(_stderr).Any(predicate), TimeSpan.FromSeconds(5), "a record on the stderr fallback");
+
+        private readonly StringWriter _stderr = NewThreadSafeStderr();
+    }
+
+    /// <summary>
+    /// A stderr fallback target that is safe to read while the server writes to it.
+    /// <see cref="StringWriter"/> is not thread-safe, and since FS-07 the logger records from
+    /// worker threads: the poll loops below read the buffer while a tool running on another
+    /// thread writes, which surfaced as an <see cref="ArgumentOutOfRangeException"/> from
+    /// <c>StringBuilder.ToString</c> — a harness race, not a logging defect.
+    /// </summary>
+    /// <remarks>
+    /// A subclass rather than <see cref="TextWriter.Synchronized"/>: that returns an opaque
+    /// <c>SyncTextWriter</c>, and these tests read the buffer directly through
+    /// <see cref="StderrLines"/>. Both sides must take the same lock — reading alone is not
+    /// enough, because the write itself is what tears the buffer while a reader copies it —
+    /// so every write entry point the logger uses is synchronized on the same monitor.
+    /// </remarks>
+    private sealed class ThreadSafeStringWriter : StringWriter
+    {
+        public override string ToString()
+        {
+            lock (GetStringBuilder())
+            {
+                return base.ToString();
+            }
+        }
+
+        public override void Write(string? value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(value);
+            }
+        }
+
+        public override void Write(char value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(value);
+            }
+        }
+
+        public override void WriteLine(string? value)
+        {
+            lock (GetStringBuilder())
+            {
+                base.WriteLine(value);
+            }
+        }
+
+        public override void WriteLine()
+        {
+            lock (GetStringBuilder())
+            {
+                base.WriteLine();
+            }
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            lock (GetStringBuilder())
+            {
+                base.Write(buffer, index, count);
+            }
+        }
     }
 
     private sealed class ThrowingWriter : TextWriter

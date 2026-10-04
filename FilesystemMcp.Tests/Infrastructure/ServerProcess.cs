@@ -18,17 +18,19 @@ internal sealed class ServerProcess : IAsyncDisposable
     /// </summary>
     public static readonly TimeSpan DefaultResponseWatchdog = TimeSpan.FromSeconds(15);
 
-    private readonly Process _process;
-    private readonly Task _stderrPump;
-    private readonly StringBuilder _stderr = new();
-    private readonly List<string> _received = [];
-    private int _id;
-    private int _exitCode;
-    private bool _killedByWatchdog;
     public static string DefaultExecutable => Environment.GetEnvironmentVariable("FILESYSTEM_MCP_TEST_SERVER")
         ?? ProtectedExecutable;
     public static string ProtectedExecutable => Path.Combine(AppContext.BaseDirectory, "server", "FilesystemMcp.TestHost.dll");
-    public string Stderr { get { lock (_stderr) return _stderr.ToString(); } }
+    public string Stderr
+    {
+        get
+        {
+            lock (_stderr)
+            {
+                return _stderr.ToString();
+            }
+        }
+    }
 
     /// <summary>Exit code captured when the process actually left. Meaningful after dispose.</summary>
     public int ExitCode => _exitCode;
@@ -43,13 +45,31 @@ internal sealed class ServerProcess : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<string> ReceivedFrames
     {
-        get { lock (_received) return _received.ToArray(); }
+        get
+        {
+            lock (_received)
+            {
+                return _received.ToArray();
+            }
+        }
     }
 
     /// <summary>Number of frames observed so far, for <see cref="FramesSince"/>.</summary>
     public int ReceivedFrameCount
     {
-        get { lock (_received) return _received.Count; }
+        get
+        {
+            lock (_received)
+            {
+                return _received.Count;
+            }
+        }
+    }
+
+    private ServerProcess(Process process)
+    {
+        _process = process;
+        _stderrPump = DrainStderrAsync();
     }
 
     /// <summary>
@@ -59,13 +79,10 @@ internal sealed class ServerProcess : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<string> FramesSince(int position)
     {
-        lock (_received) return _received.Skip(position).ToArray();
-    }
-
-    private ServerProcess(Process process)
-    {
-        _process = process;
-        _stderrPump = DrainStderrAsync();
+        lock (_received)
+        {
+            return _received.Skip(position).ToArray();
+        }
     }
 
     public static async Task<ServerProcess> StartAsync(string workspace, string[]? options = null,
@@ -80,11 +97,27 @@ internal sealed class ServerProcess : IAsyncDisposable
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = Sandbox.Utf8, StandardOutputEncoding = Sandbox.Utf8, StandardErrorEncoding = Sandbox.Utf8
         };
-        if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
-        foreach (var pair in environment ?? new Dictionary<string, string>()) info.Environment[pair.Key] = pair.Value;
-        if (isDll) info.ArgumentList.Add(executable);
+        if (workingDirectory is not null)
+        {
+            info.WorkingDirectory = workingDirectory;
+        }
+
+        foreach (var pair in environment ?? new Dictionary<string, string>())
+        {
+            info.Environment[pair.Key] = pair.Value;
+        }
+
+        if (isDll)
+        {
+            info.ArgumentList.Add(executable);
+        }
+
         info.ArgumentList.Add(workspace);
-        foreach (var option in options ?? []) info.ArgumentList.Add(option);
+        foreach (var option in options ?? [])
+        {
+            info.ArgumentList.Add(option);
+        }
+
         var server = new ServerProcess(Process.Start(info) ?? throw new InvalidOperationException("Cannot start MCP test process."));
         try
         {
@@ -100,7 +133,11 @@ internal sealed class ServerProcess : IAsyncDisposable
             }
             return server;
         }
-        catch { await server.DisposeAsync(); throw; }
+        catch
+        {
+            await server.DisposeAsync();
+            throw;
+        }
     }
 
     public static JsonElement Arguments(object value) => JsonSerializer.SerializeToElement(value);
@@ -181,7 +218,10 @@ internal sealed class ServerProcess : IAsyncDisposable
     {
         var budget = watchdog ?? DefaultResponseWatchdog;
         string? line;
-        try { line = await _process.StandardOutput.ReadLineAsync().WaitAsync(budget); }
+        try
+        {
+            line = await _process.StandardOutput.ReadLineAsync().WaitAsync(budget);
+        }
         catch (TimeoutException)
         {
             throw new Xunit.Sdk.XunitException(
@@ -189,7 +229,11 @@ internal sealed class ServerProcess : IAsyncDisposable
         }
 
         Assert.True(line is not null, "Server exited before response: " + Stderr);
-        lock (_received) _received.Add(line!);
+        lock (_received)
+        {
+            _received.Add(line!);
+        }
+
         return line!;
     }
 
@@ -230,15 +274,6 @@ internal sealed class ServerProcess : IAsyncDisposable
     /// <summary>Stdout bytes not yet consumed by <see cref="ReadRawLineAsync"/>.</summary>
     public Task<string> ReadRemainingStdoutAsync() => _process.StandardOutput.ReadToEndAsync();
 
-    private async Task DrainStderrAsync()
-    {
-        var buffer = new char[2048];
-        int count;
-        while ((count = await _process.StandardError.ReadAsync(buffer)) > 0)
-            lock (_stderr)
-                if (_stderr.Length < 131072) _stderr.Append(buffer, 0, Math.Min(count, 131072 - _stderr.Length));
-    }
-
     public async ValueTask DisposeAsync()
     {
         try
@@ -246,7 +281,10 @@ internal sealed class ServerProcess : IAsyncDisposable
             if (!_process.HasExited)
             {
                 _process.StandardInput.Close();
-                try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)); }
+                try
+                {
+                    await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
+                }
                 catch (TimeoutException)
                 {
                     _killedByWatchdog = true;
@@ -273,4 +311,28 @@ internal sealed class ServerProcess : IAsyncDisposable
             _process.Dispose();
         }
     }
+
+    private async Task DrainStderrAsync()
+    {
+        var buffer = new char[2048];
+        int count;
+        while ((count = await _process.StandardError.ReadAsync(buffer)) > 0)
+        {
+            lock (_stderr)
+            {
+                if (_stderr.Length < 131072)
+                {
+                    _stderr.Append(buffer, 0, Math.Min(count, 131072 - _stderr.Length));
+                }
+            }
+        }
+    }
+
+    private readonly Process _process;
+    private readonly Task _stderrPump;
+    private readonly StringBuilder _stderr = new();
+    private readonly List<string> _received = [];
+    private int _id;
+    private int _exitCode;
+    private bool _killedByWatchdog;
 }

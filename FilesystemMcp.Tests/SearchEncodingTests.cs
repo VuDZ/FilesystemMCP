@@ -21,23 +21,6 @@ public sealed class SearchEncodingTests
     [InlineData("utf8"), InlineData("utf8bom")]
     public Task Utf8FilesAreSearchable(string encoding) => CheckEncodingAsync(encoding);
 
-    private static async Task CheckEncodingAsync(string encoding)
-    {
-        using var sandbox = new Sandbox();
-        sandbox.Write("файл.txt", "first\r\nneedle Привет\r\n", TextEncodingTests.EncodingFor(encoding));
-        var read = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("файл.txt", new());
-        Assert.Contains("needle Привет", read.Text);
-        var raw = await new SearchTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default);
-        var payload = ServerProcess.JsonDocumentParse(raw);
-        var match = Assert.Single(payload.GetProperty("matches").EnumerateArray());
-        Assert.Equal("файл.txt", match.GetProperty("path").GetString());
-        Assert.Equal(2, match.GetProperty("line").GetInt32());
-        // A decodable text file is never reported through the skip channel, and the
-        // Unicode path stays the logical in-workspace name.
-        Assert.Equal(0, payload.GetProperty("skipped_count").GetInt32());
-        Assert.False(payload.GetProperty("incomplete").GetBoolean());
-    }
-
     [Theory, Trait("Status", "Baseline")]
     [InlineData("utf8", "first\rneedle Привет\rthird\n")]
     [InlineData("utf8bom", "first\r\nneedle Привет\rthird\n")]
@@ -169,7 +152,13 @@ public sealed class SearchEncodingTests
         var victim = sandbox.Write("gone.txt", "needle");
         var tool = new SearchTool(new PathPolicy(sandbox.Workspace))
         {
-            BeforeFileSearch = path => { if (PathPolicy.Comparer.Equals(path, victim)) File.Delete(victim); }
+            BeforeFileSearch = path =>
+            {
+                if (PathPolicy.Comparer.Equals(path, victim))
+                {
+                    File.Delete(victim);
+                }
+            }
         };
         var payload = ServerProcess.JsonDocumentParse(await tool.ExecuteAsync(
             ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default));
@@ -259,12 +248,33 @@ public sealed class SearchEncodingTests
         }
     }
 
+    private static async Task CheckEncodingAsync(string encoding)
+    {
+        using var sandbox = new Sandbox();
+        sandbox.Write("файл.txt", "first\r\nneedle Привет\r\n", TextEncodingTests.EncodingFor(encoding));
+        var read = await new FileOperationsService(sandbox.Workspace).ReadFileAsync("файл.txt", new());
+        Assert.Contains("needle Привет", read.Text);
+        var raw = await new SearchTool(sandbox.Workspace).ExecuteAsync(ServerProcess.Arguments(new { regex = "needle", file_mask = "*.txt" }), default);
+        var payload = ServerProcess.JsonDocumentParse(raw);
+        var match = Assert.Single(payload.GetProperty("matches").EnumerateArray());
+        Assert.Equal("файл.txt", match.GetProperty("path").GetString());
+        Assert.Equal(2, match.GetProperty("line").GetInt32());
+        // A decodable text file is never reported through the skip channel, and the
+        // Unicode path stays the logical in-workspace name.
+        Assert.Equal(0, payload.GetProperty("skipped_count").GetInt32());
+        Assert.False(payload.GetProperty("incomplete").GetBoolean());
+    }
+
     /// <summary>A memory-backed stream that hands out at most <c>maximum</c> bytes per read.</summary>
     private sealed class ShortReadStream(byte[] data, int maximum) : MemoryStream(data)
     {
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            if (buffer.Length > maximum) buffer = buffer[..maximum];
+            if (buffer.Length > maximum)
+            {
+                buffer = buffer[..maximum];
+            }
+
             return base.ReadAsync(buffer, cancellationToken);
         }
     }
@@ -275,15 +285,17 @@ public sealed class SearchEncodingTests
     /// </summary>
     private sealed class GeneratedLineStream(long length) : Stream
     {
-        private long _remaining = length;
-
         internal long BytesHandedOut { get; private set; }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException("No length.");
-        public override long Position { get => 0; set => throw new NotSupportedException("Read-only."); }
+        public override long Position
+        {
+            get => 0;
+            set => throw new NotSupportedException("Read-only.");
+        }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
@@ -304,9 +316,14 @@ public sealed class SearchEncodingTests
             return handed;
         }
 
-        public override void Flush() { }
+        public override void Flush()
+        {
+        }
+
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException("Read-only.");
         public override void SetLength(long value) => throw new NotSupportedException("Read-only.");
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException("Read-only.");
+
+        private long _remaining = length;
     }
 }

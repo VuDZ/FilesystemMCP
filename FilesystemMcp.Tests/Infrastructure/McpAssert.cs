@@ -4,10 +4,6 @@ namespace FilesystemMcp.Tests.Infrastructure;
 
 internal static class McpAssert
 {
-    /// <summary>Fragments that only a leaked stack trace or exception type name produces.</summary>
-    private static readonly string[] StackTraceMarkers =
-        ["   at ", ".cs:line ", "System.IO.", "System.InvalidOperationException", "System.ArgumentException"];
-
     public static void ProtocolError(JsonElement response, int expectedCode)
     {
         Assert.True(response.TryGetProperty("error", out var error), "Expected protocol error, received: " + response);
@@ -96,7 +92,7 @@ internal static class McpAssert
             Assert.DoesNotContain(values, value => value.Contains(secret, StringComparison.OrdinalIgnoreCase));
         }
 
-        foreach (var marker in StackTraceMarkers)
+        foreach (var marker in _stackTraceMarkers)
         {
             Assert.DoesNotContain(values, value => value.Contains(marker, StringComparison.Ordinal));
         }
@@ -141,4 +137,8 @@ internal static class McpAssert
                 break;
         }
     }
+
+    /// <summary>Fragments that only a leaked stack trace or exception type name produces.</summary>
+    private static readonly string[] _stackTraceMarkers =
+        ["   at ", ".cs:line ", "System.IO.", "System.InvalidOperationException", "System.ArgumentException"];
 }

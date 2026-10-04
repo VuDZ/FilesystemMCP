@@ -189,7 +189,8 @@ public sealed class SearchBudgetTests
 
     [Fact, Trait("Status", "Baseline")]
     public async Task AnAlreadyTruncatedResultKeepsItsCauseWhenThePayloadIsTrimmed()
-    {        using var sandbox = new Sandbox();
+    {
+        using var sandbox = new Sandbox();
         WriteSearchWorkload(sandbox, 400);
 
         // The deadline cuts the search first; the tiny budget then bounds the answer, and the

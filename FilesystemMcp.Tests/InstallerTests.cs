@@ -36,131 +36,6 @@ public sealed class InstallerTests
         ?? Path.Combine(AppContext.BaseDirectory, "assets", "install2opencode.ps1");
     private static string SamplePath => Path.Combine(Path.GetDirectoryName(ScriptPath)!, "AGENTS.md.sample");
 
-    // ---------------------------------------------------------------- install ------------------
-
-    private static Task<ProcessResult> InstallAsync(Sandbox sandbox, params string[] options) =>
-        InstallAsync(ProcessRunner.PowerShellExecutable, sandbox, options);
-
-    /// <summary>
-    /// Runs the installer with an explicitly chosen PowerShell, so the same contract can be
-    /// exercised on Windows PowerShell 5.1 and on PowerShell 7.
-    /// </summary>
-    private static Task<ProcessResult> InstallAsync(string powerShell, Sandbox sandbox, params string[] options) =>
-        ProcessRunner.PowerShellAsync(powerShell, new[]
-        {
-            "-File", ScriptPath,
-            "-BinaryPath", ServerProcess.DefaultExecutable,
-            "-WorkspacePath", sandbox.Workspace
-        }.Concat(options));
-
-    private static Task<ProcessResult> InstallWithBinaryAsync(Sandbox sandbox, string binary, params string[] options) =>
-        ProcessRunner.PowerShellAsync(new[]
-        {
-            "-File", ScriptPath, "-BinaryPath", binary, "-WorkspacePath", sandbox.Workspace
-        }.Concat(options));
-
-    // ------------------------------------------------------------------ state -------------------
-
-    private static string ConfigPath(Sandbox sandbox) => Path.Combine(sandbox.Workspace, ConfigName);
-    private static string AgentsPath(Sandbox sandbox) => Path.Combine(sandbox.Workspace, AgentsName);
-
-    private static async Task<byte[]> WriteConfigAsync(Sandbox sandbox, string content) =>
-        await File.ReadAllBytesAsync(sandbox.Write(ConfigName, content));
-
-    private static async Task<JsonElement> ConfigAsync(Sandbox sandbox) =>
-        ServerProcess.JsonDocumentParse(await File.ReadAllTextAsync(ConfigPath(sandbox)));
-
-    private static string[] Command(JsonElement config) =>
-        config.GetProperty("mcp").GetProperty("filesystem-mcp").GetProperty("command")
-            .EnumerateArray().Select(item => item.GetString()!).ToArray();
-
-    /// <summary>Backups and atomic-write temp files are recognised by name, never by timestamp.</summary>
-    private static string[] Matching(Sandbox sandbox, string prefix, string suffix) =>
-        Directory.EnumerateFiles(sandbox.Workspace)
-            .Where(path => Path.GetFileName(path).StartsWith(prefix, StringComparison.Ordinal)
-                && Path.GetFileName(path).EndsWith(suffix, StringComparison.Ordinal))
-            .ToArray();
-
-    private static string[] Backups(Sandbox sandbox) => Matching(sandbox, BackupPattern, ".bak");
-    private static string[] TempFiles(Sandbox sandbox) => Matching(sandbox, TempPattern, ".tmp");
-
-    private static string[] EntryNames(Sandbox sandbox) =>
-        Directory.EnumerateFileSystemEntries(sandbox.Workspace).Select(Path.GetFileName)
-            .OrderBy(name => name, StringComparer.Ordinal).Select(name => name!).ToArray();
-
-    // ----------------------------------------------------------------- report -------------------
-
-    /// <summary>Value of one human report line, for example <c>Backup: &lt;path&gt;</c>.</summary>
-    private static string ReportValue(ProcessResult result, string key)
-    {
-        var line = result.Stdout.Split('\n').Select(text => text.TrimEnd('\r'))
-            .FirstOrDefault(text => text.TrimStart().StartsWith(key, StringComparison.Ordinal));
-        Assert.True(line is not null, $"stdout has no '{key}' line.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
-        var value = line!.TrimStart()[key.Length..].Trim();
-        return value.Length >= 2 && value[0] == '"' && value[^1] == '"' ? value[1..^1] : value;
-    }
-
-    /// <summary>The AGENTS.md outcome word, one of the four the contract fixes.</summary>
-    private static string AgentsStatus(ProcessResult result)
-    {
-        var word = ReportValue(result, "AGENTS.md:").Split(' ', '(', '\t')[0];
-        Assert.Contains(word, new[] { "created", "appended", "unchanged", "skipped" });
-        return word;
-    }
-
-    /// <summary>A run without a backup must still print the line and must not name a real file.</summary>
-    private static void AssertNoBackupReported(ProcessResult result)
-    {
-        var value = ReportValue(result, "Backup:");
-        Assert.False(string.IsNullOrWhiteSpace(value), "The Backup line is empty: " + result.Stdout);
-        Assert.False(File.Exists(value), $"This run reported a real backup file, but it preserved nothing: {value}");
-        Assert.False(Path.IsPathRooted(value), $"A run without a backup reported a path: {value}");
-    }
-
-    private static void AssertSucceeded(ProcessResult result) =>
-        Assert.True(result.ExitCode == 0, $"Installer exited {result.ExitCode}.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
-
-    /// <summary>Refusal shape: non-zero exit, exact old bytes, no backup, no temp file, no AGENTS.md.</summary>
-    private static async Task AssertRefusedAsync(Sandbox sandbox, ProcessResult result, byte[] original)
-    {
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
-        Assert.Empty(Backups(sandbox));
-        Assert.Empty(TempFiles(sandbox));
-        Assert.False(File.Exists(AgentsPath(sandbox)), "A refused run published AGENTS.md: " + result.Stdout);
-    }
-
-    private static void AssertCommand(Sandbox sandbox, string[] actual, bool denySymLinks)
-    {
-        var expected = new List<string> { Slash(ServerProcess.DefaultExecutable), Slash(sandbox.Workspace) };
-        if (denySymLinks) expected.Add(SymLinkOption);
-        Assert.Equal(expected.Count, actual.Length);
-        for (var index = 0; index < expected.Count; index++)
-            Assert.Equal(expected[index], actual[index], ignoreCase: true);
-    }
-
-    /// <summary>The two arguments the installer owns, wherever the rest of the command came from.</summary>
-    private static void AssertCommandPrefix(Sandbox sandbox, string[] actual)
-    {
-        Assert.True(actual.Length >= 2, "the command lost the binary or the workspace: " + string.Join(", ", actual));
-        Assert.Equal(Slash(ServerProcess.DefaultExecutable), actual[0], ignoreCase: true);
-        Assert.Equal(Slash(sandbox.Workspace), actual[1], ignoreCase: true);
-        Assert.DoesNotContain(SymLinkOption, actual);
-    }
-
-    private static string Slash(string path) => path.Replace('\\', '/');
-
-    private static string Normalize(string text) => text.Replace("\r\n", "\n");
-
-    private static int CountOccurrences(string text, string value)
-    {
-        var count = 0;
-        for (var index = text.IndexOf(value, StringComparison.Ordinal); index >= 0;
-             index = text.IndexOf(value, index + value.Length, StringComparison.Ordinal))
-            count++;
-        return count;
-    }
-
     /// <summary>The sample's opening line is the marker that must appear exactly once.</summary>
     private static string SampleMarker => File.ReadLines(SamplePath).First();
 
@@ -632,7 +507,9 @@ public sealed class InstallerTests
         await File.WriteAllTextAsync(AgentsPath(sandbox), "# rules\r\n", Sandbox.Utf8);
         ProcessResult result;
         using (File.Open(AgentsPath(sandbox), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
             result = await InstallAsync(sandbox, "-WhatIf", "-AsJson");
+        }
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal(bytes, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
@@ -686,14 +563,6 @@ public sealed class InstallerTests
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal("refused", Summary(result).GetProperty("configAction").GetString());
         Assert.Equal("binary", Summary(result).GetProperty("failed").GetString());
-    }
-
-    /// <summary>The JSON line a run prints when it refuses before it has a full report.</summary>
-    private static JsonElement Summary(ProcessResult result)
-    {
-        var line = result.Stdout.Trim().Split('\n').LastOrDefault(text => text.TrimStart().StartsWith('{'));
-        Assert.True(line is not null, $"stdout has no JSON line.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
-        return ServerProcess.JsonDocumentParse(line!.Trim());
     }
 
     [Fact]
@@ -759,7 +628,9 @@ public sealed class InstallerTests
         var path = ConfigPath(sandbox);
         ProcessResult result;
         using (var holder = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
             result = await InstallAsync(sandbox, "-AsJson");
+        }
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal(bytes, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
@@ -822,11 +693,6 @@ public sealed class InstallerTests
         var result = await InstallAsync(sandbox);
         await AssertRefusedAsync(sandbox, result, original);
     }
-
-    /// <summary>An unknown top-level setting nested <paramref name="depth"/> objects deep.</summary>
-    private static string NestedConfig(int depth) =>
-        "{\"model\":\"m\",\"deep\":" + string.Concat(Enumerable.Repeat("{\"a\":", depth))
-        + "{\"leaf\":\"kept\"}" + new string('}', depth) + "}";
 
     [Fact]
     public async Task BinaryPathThatIsADirectoryIsRefused()
@@ -917,7 +783,9 @@ public sealed class InstallerTests
         var original = await WriteConfigAsync(sandbox, "{\"mcp\":{\"filesystem-mcp\":{\"type\":\"remote\",\"command\":[\"stale\"]}}}");
         ProcessResult result;
         using (new FileStream(ConfigPath(sandbox), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
             result = await InstallAsync(sandbox);
+        }
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
@@ -940,7 +808,9 @@ public sealed class InstallerTests
 
         ProcessResult result;
         using (new FileStream(AgentsPath(sandbox), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
             result = await InstallAsync(sandbox);
+        }
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
@@ -966,27 +836,6 @@ public sealed class InstallerTests
     [PwshFact]
     public Task PwshSecondCommitFailureRestoresTheConfigFromTheBackupAndReportsRecovery() =>
         SecondCommitFailureAsync(PwshFactAttribute.Executable!);
-
-    private static async Task SecondCommitFailureAsync(string powerShell)
-    {
-        using var sandbox = new Sandbox();
-        var original = await WriteConfigAsync(sandbox, "{\"model\":\"m\",\"mcp\":{\"filesystem-mcp\":{\"type\":\"remote\",\"command\":[\"stale\"]}}}");
-        sandbox.Write(AgentsName, "# Мои правила\r\n");
-        var agentsBytes = await File.ReadAllBytesAsync(AgentsPath(sandbox));
-
-        ProcessResult result;
-        using (new FileStream(AgentsPath(sandbox), FileMode.Open, FileAccess.Read, FileShare.Read))
-            result = await InstallAsync(powerShell, sandbox);
-
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
-        Assert.Equal(agentsBytes, await File.ReadAllBytesAsync(AgentsPath(sandbox)));
-        Assert.Single(Backups(sandbox));
-        Assert.Equal(original, await File.ReadAllBytesAsync(Backups(sandbox)[0]));
-        Assert.Empty(TempFiles(sandbox));
-        // The outcome vocabulary is not fixed by the contract; every accepted word names the restore.
-        Assert.Matches("(?i)(restor|rollback|roll-back|rolled back|revert)", result.Stdout + "\n" + result.Stderr);
-    }
 
     // ---------------------------------------------------------------- allowSymLinks --------------
 
@@ -1092,7 +941,9 @@ public sealed class InstallerTests
         var after = Normalize(await File.ReadAllTextAsync(AgentsPath(sandbox)));
         Assert.StartsWith(before.TrimEnd(), after, StringComparison.Ordinal);
         foreach (var rule in new[] { "# Мои правила", "- всегда пиши тесты", "- не трогай прод" })
+        {
             Assert.Contains(rule, after, StringComparison.Ordinal);
+        }
         Assert.Equal(1, CountOccurrences(after, AgentsSectionHeader));
         Assert.Equal(1, CountOccurrences(after, SampleMarker));
 
@@ -1147,9 +998,6 @@ public sealed class InstallerTests
     }
 
     // ------------------------------------------------------------- PowerShell 7 lane --------------
-
-    private static Task<ProcessResult> PwshAsync(Sandbox sandbox, params string[] options) =>
-        InstallAsync(PwshFactAttribute.Executable!, sandbox, options);
 
     [PwshFact]
     public async Task PwshFreshInstallUsesTheUnicodeWorkspaceAsSingleArgument()
@@ -1241,4 +1089,175 @@ public sealed class InstallerTests
         Assert.Equal(JsonValueKind.Object, ServerProcess.JsonDocumentParse(summary).ValueKind);
         Assert.True(File.Exists(ConfigPath(sandbox)), "-AsJson suppressed the install.");
     }
+
+    // ---------------------------------------------------------------- install ------------------
+
+    private static Task<ProcessResult> InstallAsync(Sandbox sandbox, params string[] options) =>
+        InstallAsync(ProcessRunner.PowerShellExecutable, sandbox, options);
+
+    /// <summary>
+    /// Runs the installer with an explicitly chosen PowerShell, so the same contract can be
+    /// exercised on Windows PowerShell 5.1 and on PowerShell 7.
+    /// </summary>
+    private static Task<ProcessResult> InstallAsync(string powerShell, Sandbox sandbox, params string[] options) =>
+        ProcessRunner.PowerShellAsync(powerShell, new[]
+        {
+            "-File", ScriptPath,
+            "-BinaryPath", ServerProcess.DefaultExecutable,
+            "-WorkspacePath", sandbox.Workspace
+        }.Concat(options));
+
+    private static Task<ProcessResult> InstallWithBinaryAsync(Sandbox sandbox, string binary, params string[] options) =>
+        ProcessRunner.PowerShellAsync(new[]
+        {
+            "-File", ScriptPath, "-BinaryPath", binary, "-WorkspacePath", sandbox.Workspace
+        }.Concat(options));
+
+    // ------------------------------------------------------------------ state -------------------
+
+    private static string ConfigPath(Sandbox sandbox) => Path.Combine(sandbox.Workspace, ConfigName);
+    private static string AgentsPath(Sandbox sandbox) => Path.Combine(sandbox.Workspace, AgentsName);
+
+    private static async Task<byte[]> WriteConfigAsync(Sandbox sandbox, string content) =>
+        await File.ReadAllBytesAsync(sandbox.Write(ConfigName, content));
+
+    private static async Task<JsonElement> ConfigAsync(Sandbox sandbox) =>
+        ServerProcess.JsonDocumentParse(await File.ReadAllTextAsync(ConfigPath(sandbox)));
+
+    private static string[] Command(JsonElement config) =>
+        config.GetProperty("mcp").GetProperty("filesystem-mcp").GetProperty("command")
+            .EnumerateArray().Select(item => item.GetString()!).ToArray();
+
+    /// <summary>Backups and atomic-write temp files are recognised by name, never by timestamp.</summary>
+    private static string[] Matching(Sandbox sandbox, string prefix, string suffix) =>
+        Directory.EnumerateFiles(sandbox.Workspace)
+            .Where(path => Path.GetFileName(path).StartsWith(prefix, StringComparison.Ordinal)
+                && Path.GetFileName(path).EndsWith(suffix, StringComparison.Ordinal))
+            .ToArray();
+
+    private static string[] Backups(Sandbox sandbox) => Matching(sandbox, BackupPattern, ".bak");
+    private static string[] TempFiles(Sandbox sandbox) => Matching(sandbox, TempPattern, ".tmp");
+
+    private static string[] EntryNames(Sandbox sandbox) =>
+        Directory.EnumerateFileSystemEntries(sandbox.Workspace).Select(Path.GetFileName)
+            .OrderBy(name => name, StringComparer.Ordinal).Select(name => name!).ToArray();
+
+    // ----------------------------------------------------------------- report -------------------
+
+    /// <summary>Value of one human report line, for example <c>Backup: &lt;path&gt;</c>.</summary>
+    private static string ReportValue(ProcessResult result, string key)
+    {
+        var line = result.Stdout.Split('\n').Select(text => text.TrimEnd('\r'))
+            .FirstOrDefault(text => text.TrimStart().StartsWith(key, StringComparison.Ordinal));
+        Assert.True(line is not null, $"stdout has no '{key}' line.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
+        var value = line!.TrimStart()[key.Length..].Trim();
+        return value.Length >= 2 && value[0] == '"' && value[^1] == '"' ? value[1..^1] : value;
+    }
+
+    /// <summary>The AGENTS.md outcome word, one of the four the contract fixes.</summary>
+    private static string AgentsStatus(ProcessResult result)
+    {
+        var word = ReportValue(result, "AGENTS.md:").Split(' ', '(', '\t')[0];
+        Assert.Contains(word, new[] { "created", "appended", "unchanged", "skipped" });
+        return word;
+    }
+
+    /// <summary>A run without a backup must still print the line and must not name a real file.</summary>
+    private static void AssertNoBackupReported(ProcessResult result)
+    {
+        var value = ReportValue(result, "Backup:");
+        Assert.False(string.IsNullOrWhiteSpace(value), "The Backup line is empty: " + result.Stdout);
+        Assert.False(File.Exists(value), $"This run reported a real backup file, but it preserved nothing: {value}");
+        Assert.False(Path.IsPathRooted(value), $"A run without a backup reported a path: {value}");
+    }
+
+    private static void AssertSucceeded(ProcessResult result) =>
+        Assert.True(result.ExitCode == 0, $"Installer exited {result.ExitCode}.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
+
+    /// <summary>Refusal shape: non-zero exit, exact old bytes, no backup, no temp file, no AGENTS.md.</summary>
+    private static async Task AssertRefusedAsync(Sandbox sandbox, ProcessResult result, byte[] original)
+    {
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
+        Assert.Empty(Backups(sandbox));
+        Assert.Empty(TempFiles(sandbox));
+        Assert.False(File.Exists(AgentsPath(sandbox)), "A refused run published AGENTS.md: " + result.Stdout);
+    }
+
+    private static void AssertCommand(Sandbox sandbox, string[] actual, bool denySymLinks)
+    {
+        var expected = new List<string> { Slash(ServerProcess.DefaultExecutable), Slash(sandbox.Workspace) };
+        if (denySymLinks)
+        {
+            expected.Add(SymLinkOption);
+        }
+        Assert.Equal(expected.Count, actual.Length);
+        for (var index = 0; index < expected.Count; index++)
+        {
+            Assert.Equal(expected[index], actual[index], ignoreCase: true);
+        }
+    }
+
+    /// <summary>The two arguments the installer owns, wherever the rest of the command came from.</summary>
+    private static void AssertCommandPrefix(Sandbox sandbox, string[] actual)
+    {
+        Assert.True(actual.Length >= 2, "the command lost the binary or the workspace: " + string.Join(", ", actual));
+        Assert.Equal(Slash(ServerProcess.DefaultExecutable), actual[0], ignoreCase: true);
+        Assert.Equal(Slash(sandbox.Workspace), actual[1], ignoreCase: true);
+        Assert.DoesNotContain(SymLinkOption, actual);
+    }
+
+    private static string Slash(string path) => path.Replace('\\', '/');
+
+    private static string Normalize(string text) => text.Replace("\r\n", "\n");
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        for (var index = text.IndexOf(value, StringComparison.Ordinal); index >= 0;
+             index = text.IndexOf(value, index + value.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>The JSON line a run prints when it refuses before it has a full report.</summary>
+    private static JsonElement Summary(ProcessResult result)
+    {
+        var line = result.Stdout.Trim().Split('\n').LastOrDefault(text => text.TrimStart().StartsWith('{'));
+        Assert.True(line is not null, $"stdout has no JSON line.\nstdout: {result.Stdout}\nstderr: {result.Stderr}");
+        return ServerProcess.JsonDocumentParse(line!.Trim());
+    }
+
+    /// <summary>An unknown top-level setting nested <paramref name="depth"/> objects deep.</summary>
+    private static string NestedConfig(int depth) =>
+        "{\"model\":\"m\",\"deep\":" + string.Concat(Enumerable.Repeat("{\"a\":", depth))
+        + "{\"leaf\":\"kept\"}" + new string('}', depth) + "}";
+
+    private static async Task SecondCommitFailureAsync(string powerShell)
+    {
+        using var sandbox = new Sandbox();
+        var original = await WriteConfigAsync(sandbox, "{\"model\":\"m\",\"mcp\":{\"filesystem-mcp\":{\"type\":\"remote\",\"command\":[\"stale\"]}}}");
+        sandbox.Write(AgentsName, "# Мои правила\r\n");
+        var agentsBytes = await File.ReadAllBytesAsync(AgentsPath(sandbox));
+
+        ProcessResult result;
+        using (new FileStream(AgentsPath(sandbox), FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            result = await InstallAsync(powerShell, sandbox);
+        }
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(original, await File.ReadAllBytesAsync(ConfigPath(sandbox)));
+        Assert.Equal(agentsBytes, await File.ReadAllBytesAsync(AgentsPath(sandbox)));
+        Assert.Single(Backups(sandbox));
+        Assert.Equal(original, await File.ReadAllBytesAsync(Backups(sandbox)[0]));
+        Assert.Empty(TempFiles(sandbox));
+        // The outcome vocabulary is not fixed by the contract; every accepted word names the restore.
+        Assert.Matches("(?i)(restor|rollback|roll-back|rolled back|revert)", result.Stdout + "\n" + result.Stderr);
+    }
+
+    private static Task<ProcessResult> PwshAsync(Sandbox sandbox, params string[] options) =>
+        InstallAsync(PwshFactAttribute.Executable!, sandbox, options);
 }

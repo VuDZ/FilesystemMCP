@@ -16,15 +16,15 @@ internal static class SharingRetry
         Func<CancellationToken, Task<T>> operation,
         Action<int>? beforeBackoff,
         CancellationToken cancellationToken) =>
-        RunAsync(operation, beforeBackoff, TimeProvider.System, delayAsync: null, cancellationToken);
+        RunAsync(operation, beforeBackoff, TimeProvider.System, delayAsync: null, cancellationToken: cancellationToken);
 
     internal static async Task<T> RunAsync<T>(
         Func<CancellationToken, Task<T>> operation,
         Action<int>? beforeBackoff,
         TimeProvider timeProvider,
         Func<TimeSpan, CancellationToken, Task>? delayAsync,
-        CancellationToken cancellationToken,
-        Func<Exception, bool>? isRetryable = null)
+        Func<Exception, bool>? isRetryable = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(timeProvider);

@@ -59,20 +59,6 @@ internal static class FileTextHelper
     }
 
     /// <summary>
-    /// The single read-open contract used by read_file and search: another process
-    /// may still write, rename or delete the file while we hold this handle. Write
-    /// sharing is governed by the FS-02 strategy and is deliberately not reused here.
-    /// </summary>
-    internal static FileStream OpenReadStream(string resolvedPath) =>
-        new(
-            resolvedPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete,
-            bufferSize: 4096,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-    /// <summary>
     /// FS-10 reference selection over an already canonical (LF) text: selected lines are
     /// joined with one LF, a leading blank selected line survives, and the LF that closed
     /// the last selected line in the source is returned too — so the answer is an exact
@@ -191,4 +177,18 @@ internal static class FileTextHelper
             throw MutationException.Conflict();
         }
     }
+
+    /// <summary>
+    /// The single read-open contract used by read_file and search: another process
+    /// may still write, rename or delete the file while we hold this handle. Write
+    /// sharing is governed by the FS-02 strategy and is deliberately not reused here.
+    /// </summary>
+    internal static FileStream OpenReadStream(string resolvedPath) =>
+        new(
+            resolvedPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
 }

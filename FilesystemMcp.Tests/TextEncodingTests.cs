@@ -292,7 +292,11 @@ public sealed class TextEncodingTests
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             Reads++;
-            if (buffer.Length > maximum) buffer = buffer[..maximum];
+            if (buffer.Length > maximum)
+            {
+                buffer = buffer[..maximum];
+            }
+
             return base.ReadAsync(buffer, cancellationToken);
         }
     }

@@ -236,8 +236,14 @@ public sealed class WorkspaceLinksAcceptanceTests
             var payload = ServerProcess.Payload(await server.ToolAsync("search", new { regex = "needle" }));
             Assert.Equal(allow ? 2 : 1, payload.GetProperty("matches").GetArrayLength());
             Assert.Equal(!allow, payload.GetProperty("incomplete").GetBoolean());
-            if (allow) Assert.Empty(payload.GetProperty("skipped").EnumerateArray());
-            else Assert.Equal("symlink_not_allowed", Assert.Single(payload.GetProperty("skipped").EnumerateArray()).GetProperty("code").GetString());
+            if (allow)
+            {
+                Assert.Empty(payload.GetProperty("skipped").EnumerateArray());
+            }
+            else
+            {
+                Assert.Equal("symlink_not_allowed", Assert.Single(payload.GetProperty("skipped").EnumerateArray()).GetProperty("code").GetString());
+            }
         }
     }
 

@@ -3,19 +3,8 @@ using System.Text;
 
 namespace FilesystemMcp.Tests.Infrastructure;
 
-internal sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);
-
 internal static class ProcessRunner
 {
-    /// <summary>
-    /// Redirected children write UTF-8 bytes (both Windows PowerShell 5.1 and PowerShell 7 report
-    /// <c>utf-8</c> for their standard output here). Without an explicit encoding the parent decodes
-    /// them with the console code page, which turns every non-ASCII path in a child's report into
-    /// mojibake. The decoder is lenient so a child that emits something else produces a readable
-    /// mismatch instead of an exception from the reader.
-    /// </summary>
-    private static readonly Encoding Utf8Pipe = new UTF8Encoding(false, false);
-
     public static string PowerShellExecutable => Environment.GetEnvironmentVariable("FILESYSTEM_MCP_TEST_POWERSHELL")
         ?? (OperatingSystem.IsWindows()
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe")
@@ -37,9 +26,13 @@ internal static class ProcessRunner
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = Utf8Pipe, StandardErrorEncoding = Utf8Pipe
+            StandardOutputEncoding = _utf8Pipe, StandardErrorEncoding = _utf8Pipe
         };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        foreach (var argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Cannot start fixture process.");
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -69,9 +62,13 @@ internal static class ProcessRunner
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = Utf8Pipe, StandardErrorEncoding = Utf8Pipe
+            StandardOutputEncoding = _utf8Pipe, StandardErrorEncoding = _utf8Pipe
         };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        foreach (var argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Cannot start fixture process.");
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -90,4 +87,13 @@ internal static class ProcessRunner
             }
         }
     }
+
+    /// <summary>
+    /// Redirected children write UTF-8 bytes (both Windows PowerShell 5.1 and PowerShell 7 report
+    /// <c>utf-8</c> for their standard output here). Without an explicit encoding the parent decodes
+    /// them with the console code page, which turns every non-ASCII path in a child's report into
+    /// mojibake. The decoder is lenient so a child that emits something else produces a readable
+    /// mismatch instead of an exception from the reader.
+    /// </summary>
+    private static readonly Encoding _utf8Pipe = new UTF8Encoding(false, false);
 }

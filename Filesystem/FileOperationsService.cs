@@ -81,12 +81,12 @@ internal sealed class FileOperationsService
             options.StartLine,
             options.EndLine,
             captureFullText: isFullFileRead,
-            Budget,
-            cancellationToken,
-            OpenReadStreamForTests,
-            BeforeReadRetry,
+            budget: Budget,
+            openStream: OpenReadStreamForTests,
+            beforeRetry: BeforeReadRetry,
             maxLines: isFullFileRead ? effectiveMaxLines : null,
-            textLimit: MaterializationLimit(effectiveMaxLines));
+            textLimit: MaterializationLimit(effectiveMaxLines),
+            cancellationToken: cancellationToken);
 
         if (isFullFileRead)
         {

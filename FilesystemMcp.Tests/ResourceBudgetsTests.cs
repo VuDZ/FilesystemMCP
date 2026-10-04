@@ -140,7 +140,6 @@ public sealed class ResourceBudgetsTests
             endLine,
             isFullFileRead,
             ResourceBudget.Default,
-            default,
             _ => new GeneratedStream(bytes, seekable: true, chunkLimit: 1),
             maxLines: isFullFileRead ? FileOperationsService.AbsoluteMaxLines : null);
 
@@ -194,7 +193,7 @@ public sealed class ResourceBudgetsTests
         foreach (var chunk in new[] { 1, 3, 4096 })
         {
             var full = await FileContentReader.ReadCanonicalAsync(
-                path, null, null, true, ResourceBudget.Default, default,
+                path, null, null, true, ResourceBudget.Default,
                 _ => new GeneratedStream(bytes, seekable: true, chunkLimit: chunk),
                 maxLines: FileOperationsService.AbsoluteMaxLines);
             Assert.Equal(canonical, full.Text);
@@ -203,7 +202,7 @@ public sealed class ResourceBudgetsTests
             Assert.Equal(expectedLines, full.TotalLines);
 
             var range = await FileContentReader.ReadCanonicalAsync(
-                path, 2, 2, false, ResourceBudget.Default, default,
+                path, 2, 2, false, ResourceBudget.Default,
                 _ => new GeneratedStream(bytes, seekable: true, chunkLimit: chunk));
             // FS-10: the selected line keeps the delimiter that closed it in the source.
             Assert.Equal("beta\n", range.Text);
@@ -230,14 +229,14 @@ public sealed class ResourceBudgetsTests
         var (md5, sha256) = FileTextHelper.ComputeContentHashes(reference.Canonical);
 
         var read = await FileContentReader.ReadCanonicalAsync(
-            "bom.txt", null, null, true, ResourceBudget.Default, default,
+            "bom.txt", null, null, true, ResourceBudget.Default,
             _ => new GeneratedStream(payload, seekable: true, chunkLimit: 1));
         Assert.Equal(reference.Canonical, read.Text);
         Assert.Equal(md5, read.Md5);
         Assert.Equal(sha256, read.Sha256);
 
         var range = await FileContentReader.ReadCanonicalAsync(
-            "bom.txt", 1, 1, false, ResourceBudget.Default, default,
+            "bom.txt", 1, 1, false, ResourceBudget.Default,
             _ => new GeneratedStream(payload, seekable: true, chunkLimit: 2));
         Assert.Equal(reference.Canonical, range.Text);
         Assert.Equal(1, range.TotalLines);
@@ -260,12 +259,12 @@ public sealed class ResourceBudgetsTests
         // The incomplete trailing sequence must fail at the final decoder flush, not be
         // dropped or replaced with U+FFFD.
         var streamError = await Assert.ThrowsAsync<MutationException>(() => FileContentReader.ReadCanonicalAsync(
-            path, null, null, true, ResourceBudget.Default, default,
+            path, null, null, true, ResourceBudget.Default,
             _ => new GeneratedStream(payload, seekable: true, chunkLimit: 2)));
         Assert.Equal("unsupported_encoding", streamError.Code);
 
         var text = await FileContentReader.ReadCanonicalAsync(
-            path, null, null, true, ResourceBudget.Default, default,
+            path, null, null, true, ResourceBudget.Default,
             _ => new GeneratedStream(new byte[] { 0x41, 0x42 }, seekable: true, chunkLimit: 2));
         Assert.Equal("AB", text.Text);
     }
@@ -281,7 +280,7 @@ public sealed class ResourceBudgetsTests
             () => new FileOperationsService(sandbox.Workspace).ReadFileAsync("binary.txt", new()));
         Assert.Equal("binary_file", fileError.Code);
         var streamError = await Assert.ThrowsAsync<MutationException>(() => FileContentReader.ReadCanonicalAsync(
-            binaryPath, null, null, true, ResourceBudget.Default, default,
+            binaryPath, null, null, true, ResourceBudget.Default,
             _ => new GeneratedStream(original, seekable: true, chunkLimit: 1)));
         Assert.Equal("binary_file", streamError.Code);
 
@@ -394,14 +393,14 @@ public sealed class ResourceBudgetsTests
             $"The reader requested a {stream.LargestBufferRequested} byte buffer.");
 
         var scanned = await FileContentReader.ReadCanonicalAsync(
-            "file.txt", 1, 1, false, ResourceBudget.Default, default,
+            "file.txt", 1, 1, false, ResourceBudget.Default,
             _ => new GeneratedStream(length, "line\n", seekable: false));
         Assert.Equal("line\n", scanned.Text);
         Assert.Equal(lineCount, scanned.TotalLines);
         Assert.Equal(sha256, scanned.Sha256);
 
         var allLines = await FileContentReader.ReadAllLinesAsync(
-            "file.txt", ResourceBudget.Default, default,
+            "file.txt", ResourceBudget.Default,
             _ => new GeneratedStream(15, "line\n", seekable: true, chunkLimit: 2));
         Assert.Equal(new[] { "line", "line", "line" }, allLines);
     }
@@ -414,20 +413,20 @@ public sealed class ResourceBudgetsTests
         // Every line, canonical EOL, no line-count cap; one byte per read splits the CRLF
         // pairs across chunks.
         var lines = await FileContentReader.ReadAllLinesAsync(
-            "file.txt", ResourceBudget.Default, default,
+            "file.txt", ResourceBudget.Default,
             _ => new GeneratedStream(Sandbox.Utf8.GetBytes("a\r\nb\r\n\r\nc"), seekable: true, chunkLimit: 1));
         Assert.Equal(new[] { "a", "b", "", "c" }, lines);
 
         var oversized = Sandbox.Utf8.GetBytes("ok\ntoolong\n");
         var allLinesError = await Assert.ThrowsAsync<ResourceLimitException>(() => FileContentReader.ReadAllLinesAsync(
-            "file.txt", ResourceBudget.Default with { MaxLineChars = 2 }, default,
+            "file.txt", ResourceBudget.Default with { MaxLineChars = 2 },
             _ => new GeneratedStream(oversized, seekable: true, chunkLimit: 1)));
         Assert.Equal("resource_limit", allLinesError.Code);
 
         // The cap is checked while lines are split, so a line outside the requested range
         // is refused instead of being scanned unbounded.
         var rangeError = await Assert.ThrowsAsync<ResourceLimitException>(() => FileContentReader.ReadCanonicalAsync(
-            "file.txt", 1, 1, false, ResourceBudget.Default with { MaxLineChars = 2 }, default,
+            "file.txt", 1, 1, false, ResourceBudget.Default with { MaxLineChars = 2 },
             _ => new GeneratedStream(oversized, seekable: true, chunkLimit: 1)));
         Assert.Equal("resource_limit", rangeError.Code);
     }
@@ -473,14 +472,16 @@ public sealed class ResourceBudgetsTests
         // The same callback cancellation is observed by the line-range path.
         using var rangeCancellation = new CancellationTokenSource();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => FileContentReader.ReadCanonicalAsync(
-            "file.txt", 1, 1, false, ResourceBudget.Default, rangeCancellation.Token,
-            _ => new GeneratedStream(bytes, seekable: true, onRead: () => rangeCancellation.Cancel())));
+            "file.txt", 1, 1, false, ResourceBudget.Default,
+            _ => new GeneratedStream(bytes, seekable: true, onRead: () => rangeCancellation.Cancel()),
+            cancellationToken: rangeCancellation.Token));
 
         // ...and by the all-lines reader used by list_directory-style callers.
         using var allLinesCancellation = new CancellationTokenSource();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => FileContentReader.ReadAllLinesAsync(
-            "file.txt", ResourceBudget.Default, allLinesCancellation.Token,
-            _ => new GeneratedStream(bytes, seekable: true, onRead: () => allLinesCancellation.Cancel())));
+            "file.txt", ResourceBudget.Default,
+            _ => new GeneratedStream(bytes, seekable: true, onRead: () => allLinesCancellation.Cancel()),
+            cancellationToken: allLinesCancellation.Token));
     }
 
     // ---- FS-07 materialization bound of a full-file read --------------------------------

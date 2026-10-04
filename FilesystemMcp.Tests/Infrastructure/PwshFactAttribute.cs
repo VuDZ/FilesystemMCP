@@ -9,22 +9,26 @@ namespace FilesystemMcp.Tests.Infrastructure;
 /// </summary>
 public sealed class PwshFactAttribute : FactAttribute
 {
-    private static readonly Lazy<(string? Path, string Reason)> ProbeResult = new(Probe);
-
     /// <summary>Absolute path to PowerShell 7, or <c>null</c> when the capability probe failed.</summary>
-    public static string? Executable => ProbeResult.Value.Path;
+    public static string? Executable => _probeResult.Value.Path;
 
     public PwshFactAttribute()
     {
-        var (path, reason) = ProbeResult.Value;
+        var (path, reason) = _probeResult.Value;
         if (path is null)
+        {
             Skip = "PowerShell 7 (pwsh) is unavailable: " + reason + ". Run a lane with PowerShell 7 on PATH.";
+        }
     }
 
     private static (string?, string) Probe()
     {
         var executable = FindOnPath();
-        if (executable is null) return (null, "no pwsh executable on PATH");
+        if (executable is null)
+        {
+            return (null, "no pwsh executable on PATH");
+        }
+
         try
         {
             // Task.Run detaches the probe from any synchronization context that a test runner
@@ -34,8 +38,15 @@ public sealed class PwshFactAttribute : FactAttribute
                 "-Command", "[int]$PSVersionTable.PSVersion.Major"
             })).GetAwaiter().GetResult();
             if (result.ExitCode != 0 || !int.TryParse(result.Stdout.Trim(), out var major))
+            {
                 return (null, $"pwsh did not report its major version (exit {result.ExitCode}: {result.Stderr.Trim()})");
-            if (major < 7) return (null, "pwsh reports major version " + major);
+            }
+
+            if (major < 7)
+            {
+                return (null, "pwsh reports major version " + major);
+            }
+
             return (executable, string.Empty);
         }
         catch (Exception ex)
@@ -51,9 +62,14 @@ public sealed class PwshFactAttribute : FactAttribute
                      .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var candidate = Path.Combine(directory.Trim('"'), name);
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
 
         return null;
     }
+
+    private static readonly Lazy<(string? Path, string Reason)> _probeResult = new(Probe);
 }

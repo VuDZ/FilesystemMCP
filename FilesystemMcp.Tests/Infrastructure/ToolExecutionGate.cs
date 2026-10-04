@@ -30,31 +30,19 @@ internal sealed class ToolExecutionGate : IAsyncDisposable
     /// <summary>Every registered tool, so a caller that omits the points holds any invocation.</summary>
     private const string DefaultPoints = "read_file,create_file,replace_in_file,search,list_directory";
 
-    /// <summary>
-    /// How long the test waits for the host to report a point. Reaching the tool
-    /// body means the child process has been scheduled and the request has been
-    /// dispatched; under a full parallel run that has taken longer than 10s while
-    /// the same case run alone reports immediately. A hang is still failed, just
-    /// not on a budget the scheduler can miss.
-    /// </summary>
-    private static readonly TimeSpan BarrierWatchdog = TimeSpan.FromSeconds(30);
-
-    /// <summary>Same framing as the host: UTF-8 without a BOM, so the first line stays raw JSON.</summary>
-    private static readonly Encoding PipeEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-
-    private readonly string _name = "filesystemmcp-toolgate-" + Guid.NewGuid().ToString("N");
-    private readonly string _points;
-    private readonly NamedPipeServerStream _reports;
-    private readonly NamedPipeServerStream _commands;
-    private StreamReader? _reader;
-    private StreamWriter? _writer;
-    private ServerProcess? _server;
-
     internal ToolExecutionGate(string? points = null)
     {
         _points = points ?? DefaultPoints;
         _reports = new NamedPipeServerStream(_name + "-reports", PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         _commands = new NamedPipeServerStream(_name + "-commands", PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _reader?.Dispose();
+        _writer?.Dispose();
+        await _reports.DisposeAsync();
+        await _commands.DisposeAsync();
     }
 
     /// <summary>
@@ -71,11 +59,11 @@ internal sealed class ToolExecutionGate : IAsyncDisposable
                 ["FS_TEST_BARRIER_PIPE"] = _name,
                 ["FS_TEST_BARRIER_POINTS"] = points ?? _points
             });
-        await reportsConnected.WaitAsync(BarrierWatchdog);
-        await commandsConnected.WaitAsync(BarrierWatchdog);
+        await reportsConnected.WaitAsync(_barrierWatchdog);
+        await commandsConnected.WaitAsync(_barrierWatchdog);
         _server = server;
-        _reader = new StreamReader(_reports, PipeEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
-        _writer = new StreamWriter(_commands, PipeEncoding, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+        _reader = new StreamReader(_reports, _pipeEncoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        _writer = new StreamWriter(_commands, _pipeEncoding, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
         return server;
     }
 
@@ -110,11 +98,14 @@ internal sealed class ToolExecutionGate : IAsyncDisposable
     private async Task<string> ReadLineAsync()
     {
         string? line;
-        try { line = await _reader!.ReadLineAsync().WaitAsync(BarrierWatchdog); }
+        try
+        {
+            line = await _reader!.ReadLineAsync().WaitAsync(_barrierWatchdog);
+        }
         catch (TimeoutException)
         {
             throw new Xunit.Sdk.XunitException(
-                $"The test host did not report a barrier point within {BarrierWatchdog.TotalSeconds:0.###}s. stderr: {_server?.Stderr}");
+                $"The test host did not report a barrier point within {_barrierWatchdog.TotalSeconds:0.###}s. stderr: {_server?.Stderr}");
         }
 
         Assert.True(line is not null, "The test host barrier pipe closed before reporting a point.");
@@ -148,11 +139,23 @@ internal sealed class ToolExecutionGate : IAsyncDisposable
         return value.GetString()!;
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        _reader?.Dispose();
-        _writer?.Dispose();
-        await _reports.DisposeAsync();
-        await _commands.DisposeAsync();
-    }
+    /// <summary>
+    /// How long the test waits for the host to report a point. Reaching the tool
+    /// body means the child process has been scheduled and the request has been
+    /// dispatched; under a full parallel run that has taken longer than 10s while
+    /// the same case run alone reports immediately. A hang is still failed, just
+    /// not on a budget the scheduler can miss.
+    /// </summary>
+    private static readonly TimeSpan _barrierWatchdog = TimeSpan.FromSeconds(30);
+
+    /// <summary>Same framing as the host: UTF-8 without a BOM, so the first line stays raw JSON.</summary>
+    private static readonly Encoding _pipeEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    private readonly string _name = "filesystemmcp-toolgate-" + Guid.NewGuid().ToString("N");
+    private readonly string _points;
+    private readonly NamedPipeServerStream _reports;
+    private readonly NamedPipeServerStream _commands;
+    private StreamReader? _reader;
+    private StreamWriter? _writer;
+    private ServerProcess? _server;
 }

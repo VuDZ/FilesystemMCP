@@ -610,20 +610,6 @@ internal static class McpLogger
         return true;
     }
 
-    /// <summary>Selects one stage of the next diagnostic record to fail.</summary>
-    internal sealed class LogFailureInjection
-    {
-        internal int Stage { get; }
-
-        internal Action<int>? Hook { get; }
-
-        internal LogFailureInjection(int stage, Action<int>? hook = null)
-        {
-            Stage = stage;
-            Hook = hook;
-        }
-    }
-
     private static readonly object _gate = new();
     private static BoundedLogQueue? _queue;
     private static ILogSink? _sink;
