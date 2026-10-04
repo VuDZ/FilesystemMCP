@@ -30,7 +30,7 @@ LoggingTests запускает изолированную копию серве
 
 ## Реализованный контракт и границы
 
-Разделение ответственности: `McpLogger` (фасад вызовов из tool/transport), `LogQueue.cs` (`BoundedLogQueue`), `LogFileSink.cs` (`LogFileSink`), `Logging.cs` (`ILogSink`, `LogEntry`, общий формат строки).
+Разделение ответственности: `McpLogger` (фасад вызовов из tool/transport), `Logging/BoundedLogQueue.cs` (`BoundedLogQueue`), `Logging/LogFileSink.cs` (`LogFileSink`), `Logging/Logging.cs` (`ILogSink`, `LogEntry`, общий формат строки).
 
 `ILogSink` — единственная точка фактической записи: `Write(string line)`, `Flush()` и `IsFailed` (признак того, что sink больше не принимает записи). Формат строки одинаков для INFO и ERROR и задаётся writer-ом, а не вызывающей стороной: `[yyyy-MM-ddTHH:mm:ss.fffZ] [LEVEL] [req=<id>] <message>`, где `Z` и UTC-время обязательны, а часть `[req=…]` присутствует только при наличии correlation id. Поэтому «UTC timestamp и request correlation одинаковы для Info/Error» — свойство одного форматтера, а не соглашение двух вызывающих путей.
 

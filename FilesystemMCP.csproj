@@ -16,8 +16,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Legacy file guard: protocol context is defined in McpProtocol.cs -->
-    <Compile Remove="McpJsonContext.cs" />
     <Compile Remove="FilesystemMcp.Tests/**/*.cs" />
     <!--
       Local scratch output. The SDK's default source glob is **/*.cs, so an out-of-tree

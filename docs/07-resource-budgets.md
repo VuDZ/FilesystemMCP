@@ -252,16 +252,16 @@ FS-12 (1.13.0) удалил прямые RPC-методы: такой `method` �
 
 | Правило | Где обеспечено | Чем удержано |
 |---|---|---|
-| Настройки, границы, startup | `ResourceBudgets.cs`, `ServerOptions.cs` | `EveryBudgetOptionRejectsDuplicateZeroNegativeAndNonNumericValues`, `OperationTimeoutAboveTheSchedulableTimerMaximumIsAStartupFailure`, `AcceptedOperationTimeoutStillAnswersInitializePingAndAToolCall` |
-| R1, R2, R15 | `FileContentReader.cs`, `FileService.cs`, `SearchTool.cs` | `FileByteBudgetAppliesEvenToSmallLineRange`, `FileByteBudgetIsNotBypassedByAMiddleLineRange`, `LineCharBudgetRefusesOneLongLineThroughStdio`, `FullFileReadIsRefusedWhileItIsReadInsteadOfAfterTheWholeTextExists`, `AllowLargeReadDoesNotRaiseTheMaterializationBound` |
+| Настройки, границы, startup | `Resources/ResourceBudgets.cs`, `ServerOptions.cs` | `EveryBudgetOptionRejectsDuplicateZeroNegativeAndNonNumericValues`, `OperationTimeoutAboveTheSchedulableTimerMaximumIsAStartupFailure`, `AcceptedOperationTimeoutStillAnswersInitializePingAndAToolCall` |
+| R1, R2, R15 | `Filesystem/FileContentReader.cs`, `Filesystem/FileOperationsService.cs`, `Tools/SearchTool.cs` | `FileByteBudgetAppliesEvenToSmallLineRange`, `FileByteBudgetIsNotBypassedByAMiddleLineRange`, `LineCharBudgetRefusesOneLongLineThroughStdio`, `FullFileReadIsRefusedWhileItIsReadInsteadOfAfterTheWholeTextExists`, `AllowLargeReadDoesNotRaiseTheMaterializationBound` |
 | R3, R13 | `Program.cs`, `RequestDeadline.cs`, `ToolRegistry.cs` | `PeerCancellationLateInTheBudgetIsReportedAsCancelledNotAsATimeoutPartialResult`, `SearchThatGenuinelyExceedsTheOperationTimeoutReturnsAPartialResult`, `OperationDeadlineOfAParkedWriteKeepsOriginalBytesAndReportsResourceLimit`, `AmbientDeadlineSurvivesContinuationsAndTheToolTaskBoundary` |
 | R4, R7, R12 | `SearchTool.cs` | `SearchMaxFilesStopsTraversalAndReturnsPartialResult`, `SearchMaxDirectoriesStopsTraversalAndReturnsPartialResult`, `FileCapStopsTraversalAfterTheBudgetedFiles`, `CleanSearchResultIsNotTruncatedAndNotIncomplete`, `MatchCapStillMarksTruncatedWithoutIncomplete`, `SkippedDetailsStayBoundedWithCompleteCountAndIncomplete`, `PathologicalRegexStillMapsToResourceLimit` |
 | R5, R6 | `StdioTransport.cs` | `EveryDeliveredFrameIsWholeJsonCarryingTheRequestIdAtAnyResponseBudget`, `PayloadOverTheResponseBudgetBecomesABoundedResourceLimitResult` |
-| R8 | `FileService.cs` | тот же набор R1 |
+| R8 | `Filesystem/FileOperationsService.cs` | тот же набор R1 |
 | R9 | `ResourceLimiter.cs`, `ToolRegistry.cs` | `OneReadSlotSerializesToolBodiesAndBothCallsStillSucceed`, `TwoReadSlotsLetTwoInvocationsReachTheBarrierBeforeAnyRelease` |
-| R10 | `BoundedFrameReader.cs`, `StdioTransport.cs` | `OversizedFrameIsRefusedWithoutExecutingAndTheStreamStaysUsable`, `FrameAtAndBelowTheRequestBudgetIsAcceptedAndOneByteOverIsRefused`, `InvalidUtf8FrameIsAParseErrorAndTheSessionSurvives` |
+| R10 | `Protocol/BoundedFrameReader.cs`, `Protocol/StdioTransport.cs` | `OversizedFrameIsRefusedWithoutExecutingAndTheStreamStaysUsable`, `FrameAtAndBelowTheRequestBudgetIsAcceptedAndOneByteOverIsRefused`, `InvalidUtf8FrameIsAParseErrorAndTheSessionSurvives` |
 | R11, R16 | `StdioTransport.cs`, `Program.cs` | `UnknownAndFinishedCancellationRequestsDoNotDisturbTheSession`, `CancellationNotificationWithoutParamsProducesNoFrame`, `PingIsAnsweredWhileAToolIsParkedOnTheBarrier` |
-| R14 | `ResourceBudgets.cs` | startup-набор выше |
+| R14 | `Resources/ResourceBudgets.cs` | startup-набор выше |
 
 Журнал исполнения и точные счётчики — в разделе «Приёмка».
 

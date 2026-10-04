@@ -30,7 +30,7 @@ ToolErrorsTests через живой stdio: missing file и stale hash возв
 
 ## Таблица кодов
 
-Единый источник — `ToolErrorCodes` / `ToolErrorMessages` / `ToolErrorMapper` (`ToolErrorMapping.cs`); `retryable` — часть машинного контракта, а не текст.
+Единый источник — `ToolErrorCodes` / `ToolErrorMessages` / `ToolErrorMapper` (`Errors/`); `retryable` — часть машинного контракта, а не текст.
 
 | code | Триггер | `retryable` |
 |---|---|---|
@@ -76,7 +76,7 @@ Protocol errors: неизвестный tool (`UnknownToolException` из `ToolR
 
 Correlation id: непредвиденный дефект проверяется двумя живыми маршрутами. Во-первых, инъекция через штатный FS-02 barrier protected host: релиз барьера командой, которую host отвергает, заставляет его бросить `IOException` из тестовой обвязки — экологический дефект, недостижимый действиями клиента (`InjectedFaultIsCorrelatedAndLeavesNoPartialWrite`). Во-вторых, `ERROR_DIRECTORY` (предвиденная ошибка клиента, намеренно нераспознанная) как второстепенный случай. Гарантия correlation id, нейтрального сообщения и «полный exception только в логе» не привязана к одному спорному триггеру.
 
-Serialization/AOT: `ToolOperationError`, `ToolErrorDetails` и `ErrorCorrelationData` объявлены в `McpProtocol.cs` и зарегистрированы в source-generated `McpJsonContext`; рефлексия не используется (`JsonSerializerIsReflectionEnabledByDefault=false`, `PublishAot=true`), сборка остаётся 0 warnings.
+Serialization/AOT: `ToolOperationError`, `ToolErrorDetails` и `ErrorCorrelationData` объявлены в `Protocol/Models/` и зарегистрированы в source-generated `McpJsonContext`; рефлексия не используется (`JsonSerializerIsReflectionEnabledByDefault=false`, `PublishAot=true`), сборка остаётся 0 warnings.
 
 ## Матрица проверки
 

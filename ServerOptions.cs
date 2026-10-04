@@ -15,7 +15,10 @@ internal sealed record ServerOptions(bool AllowSymLinks = true, string? LogDirec
     public static (string Workspace, ServerOptions Options) Parse(string[] args)
     {
         if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]) || args[0].StartsWith("--", StringComparison.Ordinal))
+        {
             throw new ArgumentException("Workspace argument is required.");
+        }
+
         var allow = true;
         string? logDirectory = null;
         var allowSeen = false;
@@ -27,10 +30,16 @@ internal sealed record ServerOptions(bool AllowSymLinks = true, string? LogDirec
             if (arg.StartsWith(AllowSymLinksPrefix, StringComparison.Ordinal))
             {
                 if (allowSeen)
+                {
                     throw new ArgumentException("Unknown, missing-value, or duplicate startup option.");
+                }
+
                 var value = arg[AllowSymLinksPrefix.Length..];
                 if (value != "true" && value != "false")
+                {
                     throw new ArgumentException("allowSymLinks must be true or false.");
+                }
+
                 allow = value == "true";
                 allowSeen = true;
                 continue;
@@ -39,10 +48,16 @@ internal sealed record ServerOptions(bool AllowSymLinks = true, string? LogDirec
             if (arg.StartsWith(LogDirectoryPrefix, StringComparison.Ordinal))
             {
                 if (logDirectorySeen)
+                {
                     throw new ArgumentException("Unknown, missing-value, or duplicate startup option.");
+                }
+
                 var value = arg[LogDirectoryPrefix.Length..];
                 if (string.IsNullOrWhiteSpace(value))
+                {
                     throw new ArgumentException("logDirectory requires a non-empty path value.");
+                }
+
                 logDirectory = value;
                 logDirectorySeen = true;
                 continue;

@@ -6,24 +6,13 @@ namespace FilesystemMcp;
 internal static class Program
 {
     internal static AtomicWriteDependencies? AtomicWritesForHost { get; set; }
+
     private const string DefaultProtocolVersion = "2024-11-05";
-    /// <summary>
-    /// Versions this server implements. A requested member of this set is reflected;
-    /// anything else is answered with <see cref="DefaultProtocolVersion"/>. Client text
-    /// is never copied through just because it parsed.
-    /// </summary>
-    private static readonly HashSet<string> SupportedProtocolVersions = new(StringComparer.Ordinal)
-    {
-        DefaultProtocolVersion
-    };
     private const string ServerName = "FilesystemMCP";
     private const int InvalidParamsCode = -32602;
     private const int InternalErrorCode = -32603;
     private const int ParseErrorCode = -32700;
     private const int InvalidRequestCode = -32600;
-    private static readonly JsonElement ServerCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
-    private static readonly JsonElement EmptyPromptsList = ParseJsonElement("""{"prompts":[]}""");
-    private static readonly JsonElement EmptyResourcesList = ParseJsonElement("""{"resources":[]}""");
 
     private static async Task<int> Main(string[] args)
     {
@@ -38,14 +27,23 @@ internal static class Program
             var (workspace, parsed) = ServerOptions.Parse(args);
             options = parsed;
             policy = new PathPolicy(workspace, options);
-            if (AtomicWritesForHost is not null) policy.AtomicWrites = AtomicWritesForHost;
+            if (AtomicWritesForHost is not null)
+            {
+                policy.AtomicWrites = AtomicWritesForHost;
+            }
             // FS-07: the read-parallelism budget is part of startup validation, so an
             // impossible value can never reach the dispatcher.
             limiter = new ResourceLimiter(options.Budget.MaxConcurrentReads);
             // FS-06: diagnostics are best effort from the first record on. A logging
             // failure here can never fail startup, and an unavailable directory only
             // disables the file sink.
-            try { McpLogger.Start(options.LogDirectory); } catch { }
+            try
+            {
+                McpLogger.Start(options.LogDirectory);
+            }
+            catch
+            {
+            }
         }
         catch (Exception ex)
         {
@@ -79,7 +77,13 @@ internal static class Program
         {
             // FS-06: bounded exit flush. Diagnostics are not allowed to delay shutdown,
             // and whatever is already queued is written before the process leaves.
-            try { McpLogger.Shutdown(TimeSpan.FromSeconds(2)); } catch { }
+            try
+            {
+                McpLogger.Shutdown(TimeSpan.FromSeconds(2));
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -147,7 +151,13 @@ internal static class Program
         using var deadlineWatch = operationDeadline.Token.Register(() =>
         {
             deadlineFired = true;
-            try { deadline.Cancel(); } catch (ObjectDisposedException) { }
+            try
+            {
+                deadline.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         });
 
         // The session side stamps itself, so "cancelled and the session did not end" stays
@@ -162,7 +172,7 @@ internal static class Program
             // happens in a catch filter after the fact, so a captured bool would still hold
             // its dispatch-time value and a deadline that fired during the request would be
             // reported as a peer cancellation.
-            return await ProcessRequestAsync(request, toolRegistry, limiter, session, deadline.Token, () => sessionEnded, () => deadlineFired);
+            return await ProcessRequestAsync(request, toolRegistry, limiter, session, () => sessionEnded, () => deadlineFired, deadline.Token);
         }
         catch (OperationCanceledException) when (IsDeadlineExceeded(deadlineFired, sessionEnded))
         {
@@ -193,9 +203,9 @@ internal static class Program
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
         ProtocolSession session,
-        CancellationToken cancellationToken,
         Func<bool> sessionEnded,
-        Func<bool> deadlineFired)
+        Func<bool> deadlineFired,
+        CancellationToken cancellationToken)
     {
         if (request is null)
         {
@@ -259,7 +269,7 @@ internal static class Program
                 "initialize" => HandleInitialize(request, session),
                 "ping" => HandlePing(request.Id),
                 "tools/list" => HandleToolsList(toolRegistry, request.Id),
-                "tools/call" => await HandleToolsCallAsync(request, toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
+                "tools/call" => await HandleToolsCallAsync(request, toolRegistry, limiter, sessionEnded, deadlineFired, cancellationToken),
                 "prompts/list" => HandlePromptsList(request.Id),
                 "resources/list" => HandleResourcesList(request.Id),
                 _ => CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method)
@@ -296,7 +306,13 @@ internal static class Program
             var correlationId = ToolErrorMapper.NewCorrelationId();
             // The logger is best effort by contract; the extra guard keeps the response
             // path independent even of a defect inside the logger itself.
-            try { McpLogger.Error("Unhandled request failure.", ex, correlationId); } catch { }
+            try
+            {
+                McpLogger.Error("Unhandled request failure.", ex, correlationId);
+            }
+            catch
+            {
+            }
             return CreateErrorResponse(
                 id: request.Id,
                 code: InternalErrorCode,
@@ -359,11 +375,11 @@ internal static class Program
             return CreateErrorResponse(request.Id, InvalidRequestCode, "Initialize was already completed.");
         }
 
-        var negotiated = SupportedProtocolVersions.Contains(protocolVersion)
+        var negotiated = _supportedProtocolVersions.Contains(protocolVersion)
             ? protocolVersion
             : DefaultProtocolVersion;
         var serverInfo = new ServerInfo(ServerName, GetServerVersion());
-        var result = new InitializeResult(negotiated, ServerCapabilities, serverInfo);
+        var result = new InitializeResult(negotiated, _serverCapabilities, serverInfo);
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.InitializeResult);
         return CreateResultResponse(request.Id, payload);
     }
@@ -411,25 +427,22 @@ internal static class Program
     private static JsonRpcResponse HandlePing(JsonElement? id) =>
         CreateResultResponse(id, EmptyObject());
 
-    private static JsonRpcResponse HandleToolsList(ToolRegistry toolRegistry, JsonElement? id)
-    {
-        var payload = toolRegistry.GetToolsListAsJson();
-        return CreateResultResponse(id, payload);
-    }
+    private static JsonRpcResponse HandleToolsList(ToolRegistry toolRegistry, JsonElement? id) =>
+        CreateResultResponse(id, toolRegistry.GetToolsListAsJson());
 
     private static JsonRpcResponse HandlePromptsList(JsonElement? id) =>
-        CreateResultResponse(id, EmptyPromptsList);
+        CreateResultResponse(id, _emptyPromptsList);
 
     private static JsonRpcResponse HandleResourcesList(JsonElement? id) =>
-        CreateResultResponse(id, EmptyResourcesList);
+        CreateResultResponse(id, _emptyResourcesList);
 
     private static async Task<JsonRpcResponse> HandleToolsCallAsync(
         JsonRpcRequest request,
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
-        CancellationToken cancellationToken,
         Func<bool> sessionEnded,
-        Func<bool> deadlineFired)
+        Func<bool> deadlineFired,
+        CancellationToken cancellationToken)
     {
         ToolsCallParams? parameters;
         try
@@ -510,7 +523,13 @@ internal static class Program
     /// </summary>
     private static JsonRpcResponse CreateInvalidParamsResponse(JsonElement? id, Exception exception)
     {
-        try { McpLogger.Info("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception)); } catch { }
+        try
+        {
+            McpLogger.Info("Invalid arguments: " + ToolErrorMapper.ArgumentFailureDetail(exception));
+        }
+        catch
+        {
+        }
         return CreateErrorResponse(id, InvalidParamsCode, "Invalid arguments.");
     }
 
@@ -565,9 +584,6 @@ internal static class Program
     /// </summary>
     private sealed class ProtocolSession
     {
-        private int _initializeAccepted;
-        private int _clientInitialized;
-
         public bool IsClientInitialized => Volatile.Read(ref _clientInitialized) != 0;
 
         public bool TryAcceptInitialize() =>
@@ -580,6 +596,21 @@ internal static class Program
                 Volatile.Write(ref _clientInitialized, 1);
             }
         }
+
+        private int _initializeAccepted;
+        private int _clientInitialized;
     }
 
+    /// <summary>
+    /// Versions this server implements. A requested member of this set is reflected;
+    /// anything else is answered with <see cref="DefaultProtocolVersion"/>. Client text
+    /// is never copied through just because it parsed.
+    /// </summary>
+    private static readonly HashSet<string> _supportedProtocolVersions = new(StringComparer.Ordinal)
+    {
+        DefaultProtocolVersion
+    };
+    private static readonly JsonElement _serverCapabilities = ParseJsonElement("""{"tools":{"listChanged":false}}""");
+    private static readonly JsonElement _emptyPromptsList = ParseJsonElement("""{"prompts":[]}""");
+    private static readonly JsonElement _emptyResourcesList = ParseJsonElement("""{"resources":[]}""");
 }
