@@ -26,6 +26,15 @@
 - Read/create/replace results стабильно содержат path и SHA256, MD5 сохраняется для совместимости. Replace сохраняет status/new_hash/snippet; обязательные общие поля согласовать без скрытых расхождений. List/search переходят на objects с metadata FS-04/10.
 - Publish version увеличить при реализации API change; docs и client examples должны описывать migration с custom RPC на tools/call.
 
+## Handshake (уточнено FS-13, версия 1.14.0)
+
+Прямые method `read_file`, `create_file`, `replace_in_file`, `list_directory`, `search` и `append_to_file` по-прежнему JSON-RPC `-32601` и не выполняются. Handshake, который FS-12 не расписывал отдельно:
+
+- Реализована одна MCP-версия: `2024-11-05`. Запрошенная поддерживаемая версия отражается. Любая другая строка, включая `2099-01-01` и `2025-06-18`, отвечает `2024-11-05`; значение клиента не копируется. Другие версии не заявляются.
+- `initialize` требует `protocolVersion` (непустая строка), `capabilities` (object) и `clientInfo` (object со строковыми `name` и `version`). Нарушение типа или обязательности — `-32602`. Повторный успешный `initialize` — `-32600`.
+- После ответа клиент шлёт `notifications/initialized`. До этого разрешены только `initialize` и `ping`; запрос tools — `-32600` с причиной про `notifications/initialized`. Исторический alias `initialized` без префикса тоже открывает сессию.
+- JSON-RPC batch для этой версии не поддерживается: один `-32600` с `id:null`, элементы не выполняются.
+
 ## Приёмка
 
 UnifiedApiTests: все шесть custom methods → -32601; sample не рекомендует append; conflicting path aliases отвергаются. Baseline: standard create не overwrite, tools/list объявляет пять tools.

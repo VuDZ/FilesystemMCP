@@ -39,6 +39,7 @@ internal sealed class StdioTransport
     });
     private readonly object _writeLock = new();
     private RequestHandler _handler = null!;
+    private Func<bool> _isClientInitialized = null!;
 
     /// <summary>
     /// The transport is constructed with the validated budget only: an unvalidated or
@@ -63,7 +64,11 @@ internal sealed class StdioTransport
     }
 
     /// <summary>Set by <see cref="Program"/> once the services exist.</summary>
-    internal void Configure(RequestHandler handler) => _handler = handler;
+    internal void Configure(RequestHandler handler, Func<bool> isClientInitialized)
+    {
+        _handler = handler ?? throw new ArgumentNullException(nameof(handler));
+        _isClientInitialized = isClientInitialized ?? throw new ArgumentNullException(nameof(isClientInitialized));
+    }
 
     /// <summary>
     /// Runs until stdin ends. Returns true when the session ended because the peer
@@ -80,7 +85,7 @@ internal sealed class StdioTransport
             {
                 if (work.Frame is { } frame)
                 {
-                    Dispatch(frame);
+                    await DispatchAsync(frame).ConfigureAwait(false);
                 }
                 else if (work.Malformed)
                 {
@@ -121,41 +126,62 @@ internal sealed class StdioTransport
         return outcome;
     }
 
-    private void Dispatch(string frame)
+    private async Task DispatchAsync(string frame)
     {
-        if (string.IsNullOrWhiteSpace(frame))
+        // A blank line is not silence. It is not JSON, so the decoder answers
+        // -32700 with an explicit null id. Dropping it here made the next request
+        // the first frame the client saw.
+        var decoded = JsonRpcFrameDecoder.Decode(frame);
+        if (decoded.Failure is { } failure)
         {
+            WriteFrame(failure);
             return;
         }
 
-        JsonRpcRequest? request;
-        try
-        {
-            request = JsonSerializer.Deserialize(frame, McpJsonContext.Default.JsonRpcRequest);
-        }
-        catch (JsonException)
-        {
-            // Not a request object at all: there is no id to answer, so the reply is
-            // id-less (FS-13 owns the full protocol-error table).
-            request = null;
-        }
-
+        var request = decoded.Request;
         if (request is null)
         {
             WriteFrame(CreateErrorResponse(null, ParseErrorCode, "Parse error"));
             return;
         }
 
-        if (IsCancellation(request))
+        // Cancellation is a notification. A request that happens to use the same method
+        // name still gets exactly one response from the handler.
+        if (!request.HasId && IsCancellation(request))
         {
             CancelInFlight(request.Params);
             return;
         }
 
+        // initialize and every notification update session state. The reader does not
+        // dispatch the next frame until that update is visible, so a pipelined
+        // tools/list cannot overtake notifications/initialized. Neither path waits on a tool.
+        if (!request.HasId || string.Equals(request.Method, "initialize", StringComparison.Ordinal))
+        {
+            await CompleteAsync(_handler(request, CancellationToken.None)).ConfigureAwait(false);
+            return;
+        }
+
         if (IsImmediate(request))
         {
-            // ping, the handshake and the list methods never wait behind a running tool.
+            // ping and the list methods never wait behind a running tool.
+            // Their session check runs on this reader, before the first await.
             Discard(CompleteAsync(_handler(request, CancellationToken.None)));
+            return;
+        }
+
+        // tools/call and every other method are otherwise queued. Reading the
+        // flag here, before the next frame, stops a pipelined
+        // notifications/initialized from opening the session first and letting
+        // the tool run. The handler repeats the same check.
+        if (_isClientInitialized is null)
+        {
+            throw new InvalidOperationException("Transport was not configured.");
+        }
+
+        if (!_isClientInitialized())
+        {
+            await CompleteAsync(_handler(request, CancellationToken.None)).ConfigureAwait(false);
             return;
         }
 
@@ -224,7 +250,11 @@ internal sealed class StdioTransport
         try
         {
             var response = await work.ConfigureAwait(false);
-            if (response is not null)
+            // EOF and shutdown cancel the session before unfinished work is joined.
+            // A tool that then reports cancelled has no peer left (FS-07 R10), so
+            // the frame is not written. Peer notifications/cancelled leaves the
+            // session alive, and that cancelled result is still delivered.
+            if (response is not null && !IsSessionCancelled)
             {
                 WriteFrame(response);
             }
@@ -441,7 +471,7 @@ internal sealed class StdioTransport
     }
 
     private static JsonRpcResponse CreateErrorResponse(JsonElement? id, int code, string message, string? truncationReason = null) =>
-        new(JsonRpcConstants.Version, id, null, new JsonRpcError(
+        new(JsonRpcConstants.Version, JsonRpcIds.OrNull(id), null, new JsonRpcError(
             code,
             message,
             truncationReason is null

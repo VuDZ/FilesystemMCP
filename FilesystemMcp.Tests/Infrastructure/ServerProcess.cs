@@ -196,6 +196,40 @@ internal sealed class ServerProcess : IAsyncDisposable
     public async Task<JsonElement> ReadAsync(TimeSpan? watchdog = null) =>
         JsonDocumentParse(await ReadRawLineAsync(watchdog));
 
+    /// <summary>Closes stdin so the server observes EOF and shuts down.</summary>
+    public void CloseInput() => _process.StandardInput.Close();
+
+    /// <summary>
+    /// Waits until the process leaves. A hang is killed and recorded on
+    /// <see cref="KilledByWatchdog"/>; this method does not treat the kill as success.
+    /// </summary>
+    public async Task WaitForShutdownAsync(TimeSpan? watchdog = null)
+    {
+        var budget = watchdog ?? DefaultResponseWatchdog;
+        try
+        {
+            await _process.WaitForExitAsync().WaitAsync(budget);
+        }
+        catch (TimeoutException)
+        {
+            _killedByWatchdog = true;
+            _process.Kill(entireProcessTree: true);
+            await _process.WaitForExitAsync();
+        }
+
+        try
+        {
+            _exitCode = _process.ExitCode;
+        }
+        catch (InvalidOperationException)
+        {
+            // The process never produced an exit code.
+        }
+    }
+
+    /// <summary>Stdout bytes not yet consumed by <see cref="ReadRawLineAsync"/>.</summary>
+    public Task<string> ReadRemainingStdoutAsync() => _process.StandardOutput.ReadToEndAsync();
+
     private async Task DrainStderrAsync()
     {
         var buffer = new char[2048];

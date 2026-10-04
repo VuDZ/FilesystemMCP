@@ -573,6 +573,16 @@ public sealed class TransportBudgetTests
         var floor = MinimalFrame(readId).Length;
         Assert.Equal(floor, MinimalFrame(listId).Length);
 
+        // FS-13 closes tools until initialize and notifications/initialized. The handshake
+        // frames are consumed here so the budget assertions below still see the tool, list
+        // and unknown-method replies. At a small budget the initialize result is replaced
+        // by the same minimal error this test already measures; the session still opens.
+        await server.SendRawLineAsync(
+            "{\"jsonrpc\":\"2.0\",\"id\":4141,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"tests\",\"version\":\"1\"}}}");
+        var initializeLine = await server.ReadRawLineAsync(ResponseWatchdog);
+        AssertWholeFrame(initializeLine, 4141, budget, floor);
+        await server.SendRawLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+
         await server.SendRawLineAsync(ToolCallFrame(readId, "read_file", new { path = "quotes.txt" }));
         var readLine = await server.ReadRawLineAsync(ResponseWatchdog);
         AssertWholeFrame(readLine, readId, budget, floor);

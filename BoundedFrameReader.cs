@@ -157,10 +157,20 @@ internal sealed class BoundedFrameReader
 
     private FrameReadResult FinishFrame(bool oversized, bool atEndOfStream, bool terminatedByLf = false)
     {
+        if (atEndOfStream && !terminatedByLf)
+        {
+            // FS-07 R10: stdin closed before LF. The partial frame is discarded and the
+            // process exits without a response — a parse error here would answer a peer
+            // that is already gone. A pending CR belongs to that same unfinished frame.
+            _pendingCarriageReturn = false;
+            return FrameReadResult.End;
+        }
+
         if (!oversized && _pendingCarriageReturn && !terminatedByLf)
         {
-            // The line ended without an LF (EOF, or a bare CR at the very end of the
-            // input), so the held CR was not half of a CRLF: it belongs to the payload.
+            // A finish that is neither EOF nor LF. EOF already returned above, and a LF
+            // drops a held CR as the first half of CRLF. A bare CR that is payload is
+            // stored only on this path.
             Store([(byte)'\r'], ref oversized);
         }
 

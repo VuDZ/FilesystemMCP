@@ -8,11 +8,41 @@ internal static class JsonRpcConstants
     public const string Version = "2.0";
 }
 
+/// <summary>
+/// JSON-RPC id values that must survive <see cref="JsonIgnoreCondition.WhenWritingNull"/>.
+/// A C# null on <see cref="JsonRpcResponse.Id"/> is omitted by the source-generated context;
+/// a <see cref="JsonElement"/> whose kind is <see cref="JsonValueKind.Null"/> is a value, so
+/// the member is written as <c>id:null</c>. Parse errors and any other failure whose id cannot
+/// be determined use <see cref="Null"/>.
+/// </summary>
+internal static class JsonRpcIds
+{
+    internal static readonly JsonElement Null = CreateNull();
+
+    internal static JsonElement OrNull(JsonElement? id) =>
+        id is { } value && value.ValueKind != JsonValueKind.Undefined ? value : Null;
+
+    private static JsonElement CreateNull()
+    {
+        using var document = JsonDocument.Parse("null");
+        return document.RootElement.Clone();
+    }
+}
+
 internal sealed record JsonRpcRequest(
     [property: JsonPropertyName("jsonrpc")] string JsonRpc,
     [property: JsonPropertyName("id")] JsonElement? Id,
     [property: JsonPropertyName("method")] string Method,
-    [property: JsonPropertyName("params")] JsonElement? Params);
+    [property: JsonPropertyName("params")] JsonElement? Params)
+{
+    /// <summary>True when the frame contained an <c>id</c> member. Absence is a notification; JSON null is not.</summary>
+    [JsonIgnore]
+    public bool HasId { get; init; }
+
+    /// <summary>True when the frame contained a <c>params</c> member, including JSON null.</summary>
+    [JsonIgnore]
+    public bool HasParams { get; init; }
+}
 
 internal sealed record JsonRpcNotification(
     [property: JsonPropertyName("jsonrpc")] string JsonRpc,

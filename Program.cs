@@ -7,6 +7,15 @@ internal static class Program
 {
     internal static AtomicWriteDependencies? AtomicWritesForHost { get; set; }
     private const string DefaultProtocolVersion = "2024-11-05";
+    /// <summary>
+    /// Versions this server implements. A requested member of this set is reflected;
+    /// anything else is answered with <see cref="DefaultProtocolVersion"/>. Client text
+    /// is never copied through just because it parsed.
+    /// </summary>
+    private static readonly HashSet<string> SupportedProtocolVersions = new(StringComparer.Ordinal)
+    {
+        DefaultProtocolVersion
+    };
     private const string ServerName = "FilesystemMCP";
     private const int InvalidParamsCode = -32602;
     private const int InternalErrorCode = -32603;
@@ -54,9 +63,13 @@ internal static class Program
 
         // FS-07: one reader, one writer lock. Tools execute off the read path, so ping
         // and notifications/cancelled stay responsive while a tool is running.
+        // FS-13: initialize is accepted once; tools stay closed until notifications/initialized.
+        var session = new ProtocolSession();
         var transport = new StdioTransport(options.Budget);
-        transport.Configure((request, cancellationToken) => HandleAsync(
-            request, toolRegistry, limiter, options, cancellationToken));
+        transport.Configure(
+            (request, cancellationToken) => HandleAsync(
+                request, toolRegistry, limiter, options, session, cancellationToken),
+            () => session.IsClientInitialized);
         try
         {
             await transport.RunAsync();
@@ -81,19 +94,30 @@ internal static class Program
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
         ServerOptions options,
+        ProtocolSession session,
         CancellationToken sessionToken)
     {
+        if (session is null)
+        {
+            throw new ArgumentNullException(nameof(session));
+        }
+
         if (request is null)
         {
             return CreateErrorResponse(null, ParseErrorCode, "Parse error");
         }
 
-        // A genuine notification is never answered; the transport keeps the one
-        // exception the historical contract had, an unparsable frame, on its own path
-        // because only it can tell whether an id was present.
-        var hasId = request.Id is { } id && id.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
-        if (!hasId && !string.Equals(request.Method, "initialize", StringComparison.Ordinal))
+        // Notifications are a separate branch from errors whose id is null. A missing id
+        // member is a notification and is never answered, including unknown methods.
+        // Parse errors and invalid ids still produce a response; those are written by the
+        // transport before this method runs, with an explicit JSON null id.
+        if (!request.HasId)
         {
+            if (IsInitializedNotification(request.Method))
+            {
+                session.MarkClientInitialized();
+            }
+
             return null;
         }
 
@@ -138,7 +162,7 @@ internal static class Program
             // happens in a catch filter after the fact, so a captured bool would still hold
             // its dispatch-time value and a deadline that fired during the request would be
             // reported as a peer cancellation.
-            return await ProcessRequestAsync(request, toolRegistry, limiter, deadline.Token, () => sessionEnded, () => deadlineFired);
+            return await ProcessRequestAsync(request, toolRegistry, limiter, session, deadline.Token, () => sessionEnded, () => deadlineFired);
         }
         catch (OperationCanceledException) when (IsDeadlineExceeded(deadlineFired, sessionEnded))
         {
@@ -168,6 +192,7 @@ internal static class Program
         JsonRpcRequest? request,
         ToolRegistry toolRegistry,
         ResourceLimiter limiter,
+        ProtocolSession session,
         CancellationToken cancellationToken,
         Func<bool> sessionEnded,
         Func<bool> deadlineFired)
@@ -196,13 +221,42 @@ internal static class Program
                 message: "Method is required");
         }
 
+        // A notification method that arrived with an id is a request, so it must be
+        // answered. It is not a lifecycle failure and it is not an unknown method.
+        if (IsNotificationMethod(request.Method))
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidRequestCode,
+                "Method " + request.Method + " is a notification and must not include an id.");
+        }
+
+        // Before notifications/initialized the only requests are initialize and ping.
+        // Tools and every other method are rejected without running.
+        if (!session.IsClientInitialized && request.Method is not ("initialize" or "ping"))
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidRequestCode,
+                "Server is not initialized. Send notifications/initialized before calling " + request.Method + ".");
+        }
+
+        if (!IsKnownRequestMethod(request.Method))
+        {
+            // Unknown method wins over a bad params shape: there is no schema to validate.
+            return CreateErrorResponse(request.Id, -32601, "Method not found: " + request.Method);
+        }
+
+        if (TryRejectNonObjectParams(request, out var paramsError))
+        {
+            return paramsError;
+        }
+
         try
         {
             return request.Method switch
             {
-                "initialize" => HandleInitialize(request),
-                "initialized" => null,
-                "notifications/initialized" => null,
+                "initialize" => HandleInitialize(request, session),
                 "ping" => HandlePing(request.Id),
                 "tools/list" => HandleToolsList(toolRegistry, request.Id),
                 "tools/call" => await HandleToolsCallAsync(request, toolRegistry, limiter, cancellationToken, sessionEnded, deadlineFired),
@@ -216,6 +270,12 @@ internal static class Program
             // Client-supplied arguments of any entry point. ArgumentNullException is
             // excluded: it is a contract check on injected services, i.e. a defect.
             return CreateInvalidParamsResponse(request.Id, ex);
+        }
+        catch (JsonException)
+        {
+            // A params object that cannot be bound is an invalid-params failure.
+            // The frame was already parsed; this is not a -32700 syntax error (FS-13).
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Invalid params.");
         }
         catch (Exception ex) when (ToolErrorMapper.TryMap(ex, requestedPath: null, out var operational))
         {
@@ -237,29 +297,115 @@ internal static class Program
             // The logger is best effort by contract; the extra guard keeps the response
             // path independent even of a defect inside the logger itself.
             try { McpLogger.Error("Unhandled request failure.", ex, correlationId); } catch { }
-            var isParseError = ex is JsonException;
             return CreateErrorResponse(
                 id: request.Id,
-                code: isParseError ? ParseErrorCode : InternalErrorCode,
-                message: isParseError ? "Parse error" : "Internal error",
+                code: InternalErrorCode,
+                message: "Internal error",
                 correlationId: correlationId);
         }
     }
 
-    private static JsonRpcResponse HandleInitialize(JsonRpcRequest request)
+    private static JsonRpcResponse HandleInitialize(JsonRpcRequest request, ProtocolSession session)
     {
-        var parameters = request.Params is null || request.Params.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
-            ? null
-            : DeserializeParams(request.Params, McpJsonContext.Default.InitializeParams);
+        if (!request.HasParams || request.Params is not { } parameters || parameters.ValueKind != JsonValueKind.Object)
+        {
+            return CreateErrorResponse(request.Id, InvalidParamsCode, "Invalid params: params must be a JSON object.");
+        }
 
-        var protocolVersion = string.IsNullOrWhiteSpace(parameters?.ProtocolVersion)
-            ? DefaultProtocolVersion
-            : parameters!.ProtocolVersion!;
+        if (!TryGetRequiredString(parameters, "protocolVersion", nonEmpty: true, out var protocolVersion))
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidParamsCode,
+                "Invalid params: protocolVersion is required and must be a non-empty string.");
+        }
 
+        if (!parameters.TryGetProperty("capabilities", out var capabilities) || capabilities.ValueKind != JsonValueKind.Object)
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidParamsCode,
+                "Invalid params: capabilities is required and must be an object.");
+        }
+
+        if (!parameters.TryGetProperty("clientInfo", out var clientInfo) || clientInfo.ValueKind != JsonValueKind.Object)
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidParamsCode,
+                "Invalid params: clientInfo is required and must be an object.");
+        }
+
+        if (!TryGetRequiredString(clientInfo, "name", nonEmpty: false, out _))
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidParamsCode,
+                "Invalid params: clientInfo.name is required and must be a string.");
+        }
+
+        if (!TryGetRequiredString(clientInfo, "version", nonEmpty: false, out _))
+        {
+            return CreateErrorResponse(
+                request.Id,
+                InvalidParamsCode,
+                "Invalid params: clientInfo.version is required and must be a string.");
+        }
+
+        // Validation failures do not consume the one initialize. A second successful
+        // initialize is an invalid request, not another handshake.
+        if (!session.TryAcceptInitialize())
+        {
+            return CreateErrorResponse(request.Id, InvalidRequestCode, "Initialize was already completed.");
+        }
+
+        var negotiated = SupportedProtocolVersions.Contains(protocolVersion)
+            ? protocolVersion
+            : DefaultProtocolVersion;
         var serverInfo = new ServerInfo(ServerName, GetServerVersion());
-        var result = new InitializeResult(protocolVersion, ServerCapabilities, serverInfo);
+        var result = new InitializeResult(negotiated, ServerCapabilities, serverInfo);
         var payload = JsonSerializer.SerializeToElement(result, McpJsonContext.Default.InitializeResult);
         return CreateResultResponse(request.Id, payload);
+    }
+
+    private static bool TryGetRequiredString(JsonElement owner, string name, bool nonEmpty, out string value)
+    {
+        if (!owner.TryGetProperty(name, out var node) || node.ValueKind != JsonValueKind.String)
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        value = node.GetString() ?? string.Empty;
+        return !nonEmpty || !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool IsInitializedNotification(string method) =>
+        method is "notifications/initialized" or "initialized";
+
+    private static bool IsNotificationMethod(string method) =>
+        method is "notifications/initialized" or "initialized" or "notifications/cancelled" or "$/cancelRequest";
+
+    private static bool IsKnownRequestMethod(string method) =>
+        method is "initialize" or "ping" or "tools/list" or "tools/call" or "prompts/list" or "resources/list";
+
+    /// <summary>
+    /// Current methods take a JSON object for <c>params</c>. A missing member is allowed
+    /// and interpreted by the method; null, array and scalars are -32602, never -32700.
+    /// </summary>
+    private static bool TryRejectNonObjectParams(JsonRpcRequest request, out JsonRpcResponse? error)
+    {
+        if (!request.HasParams || request.Params is { } node && node.ValueKind == JsonValueKind.Object)
+        {
+            error = null;
+            return false;
+        }
+
+        var message = string.Equals(request.Method, "tools/call", StringComparison.Ordinal)
+            ? "Missing or invalid tools/call params."
+            : "Invalid params: params must be a JSON object.";
+        error = CreateErrorResponse(request.Id, InvalidParamsCode, message);
+        return true;
     }
 
     private static JsonRpcResponse HandlePing(JsonElement? id) =>
@@ -405,11 +551,35 @@ internal static class Program
         new(JsonRpcConstants.Version, id, result, null);
 
     private static JsonRpcResponse CreateErrorResponse(JsonElement? id, int code, string message, string? correlationId = null) =>
-        new(JsonRpcConstants.Version, id, null, new JsonRpcError(
+        new(JsonRpcConstants.Version, JsonRpcIds.OrNull(id), null, new JsonRpcError(
             code,
             message,
             correlationId is null
                 ? null
                 : JsonSerializer.SerializeToElement(new ErrorCorrelationData(correlationId), McpJsonContext.Default.ErrorCorrelationData)));
+
+    /// <summary>
+    /// One process, one handshake. <see cref="TryAcceptInitialize"/> flips only after a
+    /// valid initialize. <see cref="MarkClientInitialized"/> is ignored until that happens,
+    /// so a premature <c>notifications/initialized</c> does not open the tools.
+    /// </summary>
+    private sealed class ProtocolSession
+    {
+        private int _initializeAccepted;
+        private int _clientInitialized;
+
+        public bool IsClientInitialized => Volatile.Read(ref _clientInitialized) != 0;
+
+        public bool TryAcceptInitialize() =>
+            Interlocked.CompareExchange(ref _initializeAccepted, 1, 0) == 0;
+
+        public void MarkClientInitialized()
+        {
+            if (Volatile.Read(ref _initializeAccepted) != 0)
+            {
+                Volatile.Write(ref _clientInitialized, 1);
+            }
+        }
+    }
 
 }
