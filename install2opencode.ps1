@@ -17,6 +17,11 @@
       - Run from publish directory (cwd == script dir) -> -WorkspacePath is required
       - Run from target project (cwd != script dir) -> cwd is used when -WorkspacePath is omitted
 
+    -ProcessDirectory is the global-install mode used by installglobal.ps1. It does not store a
+    project path. The command is only the binary, and cwd is ".". OpenCode resolves that cwd
+    from the session directory and passes the result as this process's working directory.
+    The directory that contains the binary is not a workspace.
+
     Existing configuration is merged, never replaced:
       - every unknown top-level setting, every other mcp server and every extra field of
         filesystem-mcp is preserved; only mcp.filesystem-mcp is written;
@@ -55,6 +60,11 @@
 param(
     [string]$BinaryPath,
     [string]$WorkspacePath,
+    # Global install. The config path is the file to merge, not a project root.
+    # installglobal.ps1 is the entry point colleagues run; it passes these switches.
+    [string]$ConfigPath,
+    [switch]$ProcessDirectory,
+    [switch]$V2,
     # [string], not [bool]: a value passed with a space ("-AllowSymLinks false") arrives as a
     # string and cannot bind to a bool parameter in either 5.1 or 7. The effective boolean is
     # resolved below, where $AllowSymLinksGiven distinguishes "omitted" (true) from an explicit value.
@@ -66,6 +76,8 @@ param(
 $script:AllowSymLinksGiven = $PSBoundParameters.ContainsKey('AllowSymLinks')
 $script:AsJsonRequested = [bool]$AsJson
 $script:WhatIfRequested = [bool]$WhatIf
+$script:ProcessDirectory = [bool]$ProcessDirectory
+$script:V2Requested = [bool]$V2
 
 # Optional: set a fixed path to the built binary (leave empty to use -BinaryPath or auto-detect next to this script).
 $DefaultBinaryPath = ''
@@ -530,16 +542,23 @@ function ConvertTo-SlashPath {
 function New-FilesystemServer {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
-        [Parameter(Mandatory = $true)][string]$Workspace,
-        [Parameter(Mandatory = $true)][bool]$AllowLinks
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Workspace,
+        [Parameter(Mandatory = $true)][bool]$AllowLinks,
+        [switch]$ProcessDirectory
     )
 
-    $command = @((ConvertTo-SlashPath $Binary), (ConvertTo-SlashPath $Workspace))
+    # A project install pins the workspace as argument 2. A global install stores only the
+    # binary: OpenCode passes the session directory as the child process working directory,
+    # and a stored project path would ignore that session. cwd "." is how OpenCode is told
+    # to resolve the session directory; it is not the folder that contains the binary.
+    if ($ProcessDirectory) { $command = @((ConvertTo-SlashPath $Binary)) }
+    else { $command = @((ConvertTo-SlashPath $Binary), (ConvertTo-SlashPath $Workspace)) }
     if (-not $AllowLinks) { $command += $SymLinkOption }
 
     $server = New-JsonObject
     $server['type'] = 'local'
     $server['command'] = $command
+    if ($ProcessDirectory) { $server['cwd'] = '.' }
     return $server
 }
 
@@ -547,7 +566,8 @@ function Merge-FilesystemServer {
     param(
         [AllowNull()][object]$Existing,
         [Parameter(Mandatory = $true)][object]$Desired,
-        [Parameter(Mandatory = $true)][bool]$AllowLinks
+        [Parameter(Mandatory = $true)][bool]$AllowLinks,
+        [switch]$ProcessDirectory
     )
 
     $existingArguments = @()
@@ -562,6 +582,10 @@ function Merge-FilesystemServer {
         foreach ($property in $Existing.PSObject.Properties) {
             $existingKeys += $property.Name
             if ($property.Name -ceq 'type') { $hasExactType = $true; continue }
+            if ($ProcessDirectory -and $property.Name -ceq 'cwd') { continue }
+            if ($ProcessDirectory -and $property.Name.Equals('cwd', [System.StringComparison]::OrdinalIgnoreCase)) {
+                Stop-Installer ("opencode.json has a member '{0}' that differs only in case from 'cwd'. PowerShell cannot read such a document back without merging them, so the installer refuses to change it. Rename it." -f $property.Name)
+            }
             if ($property.Name -ceq 'command') {
                 $hasExactCommand = $true
                 if ($null -ne $property.Value) { $existingArguments = @($property.Value) }
@@ -572,7 +596,8 @@ function Merge-FilesystemServer {
     }
 
     $binary = [string]$Desired.command[0]
-    $workspace = [string]$Desired.command[1]
+    $workspace = ''
+    if (-not $ProcessDirectory) { $workspace = [string]$Desired.command[1] }
     # The installer owns the command prefix: the first two arguments are always this binary and
     # this workspace, so a re-run converges instead of appending a second copy of them. Only named
     # options from the previous command are carried over, because a leftover positional argument
@@ -594,7 +619,8 @@ function Merge-FilesystemServer {
             $argument.Contains('=')) { $kept += $argument }
     }
 
-    $command = @($binary, $workspace) + $kept
+    if ($ProcessDirectory) { $command = @($binary) + $kept }
+    else { $command = @($binary, $workspace) + $kept }
     if (-not $AllowLinks) { $command += $SymLinkOption }
     # @() keeps the result an array even for a single argument: a bare string would serialize as a
     # JSON string instead of a one-element array.
@@ -602,14 +628,60 @@ function Merge-FilesystemServer {
     # Ours are written back on the position they already had, and only appended when they are new.
     $writtenType = $false
     $writtenCommand = $false
+    $writtenCwd = $false
     foreach ($key in $existingKeys) {
         if ($key -ceq 'type') { $server['type'] = $Desired.type; $writtenType = $true; continue }
         if ($key -ceq 'command') { $server['command'] = @($command); $writtenCommand = $true; continue }
+        if ($ProcessDirectory -and $key -ceq 'cwd') { $server['cwd'] = '.'; $writtenCwd = $true; continue }
         $server[$key] = $fields[$key]
     }
     if (-not $writtenCommand) { $server['command'] = @($command) }
     if (-not $writtenType) { $server['type'] = $Desired.type }
+    if ($ProcessDirectory -and -not $writtenCwd) { $server['cwd'] = '.' }
     return $server
+}
+
+function Test-IsOpenCodeV2Mcp {
+    param([AllowNull()][object]$Mcp)
+
+    # v2 nests servers under mcp.servers. A v1 server that is itself named "servers"
+    # carries type or command, and must not be treated as that container.
+    $servers = Get-ExactProperty -Object $Mcp -Name 'servers'
+    if ($null -eq $servers -or $null -eq $servers.Value -or -not (Test-IsJsonObject $servers.Value)) { return $false }
+    if ($null -ne (Get-ExactProperty -Object $servers.Value -Name 'type')) { return $false }
+    if ($null -ne (Get-ExactProperty -Object $servers.Value -Name 'command')) { return $false }
+    return $true
+}
+
+function Merge-ServerMap {
+    param(
+        [AllowNull()][object]$Map,
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Workspace,
+        [Parameter(Mandatory = $true)][bool]$AllowLinks,
+        [switch]$ProcessDirectory
+    )
+
+    $desired = New-FilesystemServer -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks -ProcessDirectory:$ProcessDirectory
+    $merged = New-JsonObject
+    $written = $false
+    if ($null -ne $Map) {
+        foreach ($property in $Map.PSObject.Properties) {
+            if ($property.Name -ceq $ServerName) {
+                if ($null -ne $property.Value -and -not (Test-IsJsonObject $property.Value)) {
+                    Stop-Installer ('The "{0}" server entry is not a JSON object; refusing to replace it.' -f $ServerName)
+                }
+                $merged[$property.Name] = Merge-FilesystemServer -Existing $property.Value -Desired $desired -AllowLinks $AllowLinks -ProcessDirectory:$ProcessDirectory
+                $written = $true
+                continue
+            }
+            $merged[$property.Name] = $property.Value
+        }
+    }
+    if (-not $written) {
+        $merged[$ServerName] = $desired
+    }
+    return $merged
 }
 
 function Merge-OpenCodeConfig {
@@ -617,8 +689,10 @@ function Merge-OpenCodeConfig {
         [AllowNull()][object]$Root,
         [Parameter(Mandatory = $true)][bool]$Exists,
         [Parameter(Mandatory = $true)][string]$Binary,
-        [Parameter(Mandatory = $true)][string]$Workspace,
-        [Parameter(Mandatory = $true)][bool]$AllowLinks
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Workspace,
+        [Parameter(Mandatory = $true)][bool]$AllowLinks,
+        [switch]$ProcessDirectory,
+        [switch]$V2
     )
 
     $result = New-JsonObject
@@ -639,31 +713,60 @@ function Merge-OpenCodeConfig {
         Stop-Installer 'The "mcp" member of the existing opencode.json is not a JSON object.'
     }
 
-    $mcp = New-JsonObject
-    $serverMember = $null
-    if ($null -ne $mcpMember -and $null -ne $mcpMember.Value) {
-        # Walking the sibling servers in order keeps filesystem-mcp on the position it already had
-        # instead of appending it after every other server.
-        foreach ($property in $mcpMember.Value.PSObject.Properties) {
-            if ($property.Name -ceq $ServerName) {
-                # The server entry is ours to write, but not to overwrite with something else: a
-                # string, number, boolean or array in that slot is the author's setting and would
-                # be discarded. Only a JSON object can be merged, and an explicit null means unset.
-                if ($null -ne $property.Value -and -not (Test-IsJsonObject $property.Value)) {
-                    Stop-Installer ('The "mcp.{0}" member of the existing opencode.json is not a JSON object; refusing to replace it.' -f $ServerName)
-                }
-                $serverMember = $property
-                $mcp[$property.Name] = Merge-FilesystemServer `
-                    -Existing $property.Value `
-                    -Desired (New-FilesystemServer -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks) `
-                    -AllowLinks $AllowLinks
-                continue
-            }
-            $mcp[$property.Name] = $property.Value
-        }
+    $mcpValue = $null
+    if ($null -ne $mcpMember) { $mcpValue = $mcpMember.Value }
+    $detectedV2 = Test-IsOpenCodeV2Mcp -Mcp $mcpValue
+    if ($ProcessDirectory -and $V2 -and $null -ne $mcpValue -and -not $detectedV2) {
+        Stop-Installer 'The existing opencode.json keeps MCP servers directly under mcp. Refusing to rewrite that map as mcp.servers.'
     }
-    if ($null -eq $serverMember) {
-        $mcp[$ServerName] = New-FilesystemServer -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks
+
+    $mcp = New-JsonObject
+    # v2 stores servers under mcp.servers. A global install follows a file that already
+    # uses that shape, and -V2 selects it when the file has no mcp map yet.
+    if ($ProcessDirectory -and ($detectedV2 -or $V2)) {
+        $serversValue = $null
+        if ($detectedV2) { $serversValue = (Get-ExactProperty -Object $mcpValue -Name 'servers').Value }
+        $servers = Merge-ServerMap -Map $serversValue -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks -ProcessDirectory
+        $serversWritten = $false
+        if ($null -ne $mcpValue) {
+            foreach ($property in $mcpValue.PSObject.Properties) {
+                if ($property.Name -ceq 'servers') {
+                    $mcp[$property.Name] = $servers
+                    $serversWritten = $true
+                    continue
+                }
+                $mcp[$property.Name] = $property.Value
+            }
+        }
+        if (-not $serversWritten) { $mcp['servers'] = $servers }
+    }
+    else {
+        $serverMember = $null
+        if ($null -ne $mcpValue) {
+            # Walking the sibling servers in order keeps filesystem-mcp on the position it already had
+            # instead of appending it after every other server.
+            foreach ($property in $mcpValue.PSObject.Properties) {
+                if ($property.Name -ceq $ServerName) {
+                    # The server entry is ours to write, but not to overwrite with something else: a
+                    # string, number, boolean or array in that slot is the author's setting and would
+                    # be discarded. Only a JSON object can be merged, and an explicit null means unset.
+                    if ($null -ne $property.Value -and -not (Test-IsJsonObject $property.Value)) {
+                        Stop-Installer ('The "mcp.{0}" member of the existing opencode.json is not a JSON object; refusing to replace it.' -f $ServerName)
+                    }
+                    $serverMember = $property
+                    $mcp[$property.Name] = Merge-FilesystemServer `
+                        -Existing $property.Value `
+                        -Desired (New-FilesystemServer -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks -ProcessDirectory:$ProcessDirectory) `
+                        -AllowLinks $AllowLinks `
+                        -ProcessDirectory:$ProcessDirectory
+                    continue
+                }
+                $mcp[$property.Name] = $property.Value
+            }
+        }
+        if ($null -eq $serverMember) {
+            $mcp[$ServerName] = New-FilesystemServer -Binary $Binary -Workspace $Workspace -AllowLinks $AllowLinks -ProcessDirectory:$ProcessDirectory
+        }
     }
 
     # The user's top-level members keep their order. "mcp" is rewritten at its own position; when
@@ -1008,6 +1111,12 @@ else {
     try { $script:AllowLinks = Resolve-AllowSymLinks -Value $AllowSymLinks }
     catch { Write-EarlyRefusal -Stage 'options' -Message $_.Exception.Message }
 }
+if ($script:V2Requested -and -not $script:ProcessDirectory) {
+    Write-EarlyRefusal -Stage 'options' -Message '-V2 is only valid together with -ProcessDirectory.'
+}
+if (-not $script:ProcessDirectory -and -not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+    Write-EarlyRefusal -Stage 'options' -Message '-ConfigPath is only valid together with -ProcessDirectory.'
+}
 
 $scriptRoot = $PSScriptRoot
 $currentDirectory = (Get-Location).Path
@@ -1024,33 +1133,55 @@ if (Test-IsDirectory $resolvedBinary) {
     Write-EarlyRefusal -Stage 'binary' -Message "-BinaryPath must be a file, but it is a directory: $resolvedBinary"
 }
 
-try {
-    if ($runningFromPublishDirectory) {
-        if ([string]::IsNullOrWhiteSpace($WorkspacePath)) {
-            Write-EarlyRefusal -Stage 'workspace' -Message 'Running from the publish directory. Pass -WorkspacePath with the target project root.'
+if ($script:ProcessDirectory) {
+    if (-not [string]::IsNullOrWhiteSpace($WorkspacePath)) {
+        Write-EarlyRefusal -Stage 'workspace' -Message '-ProcessDirectory does not take -WorkspacePath. OpenCode passes the session directory as the process working directory; the folder that contains the binary is not a workspace.'
+    }
+    if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+        Write-EarlyRefusal -Stage 'config' -Message '-ProcessDirectory requires -ConfigPath.'
+    }
+    $resolvedWorkspace = ''
+    $openCodeConfigPath = $ConfigPath
+    $configDirectory = [System.IO.Path]::GetDirectoryName($openCodeConfigPath)
+    if ([string]::IsNullOrWhiteSpace($configDirectory)) {
+        Write-EarlyRefusal -Stage 'config' -Message "-ConfigPath must be a file path: $ConfigPath"
+    }
+    $jsoncSibling = Join-Path $configDirectory 'opencode.jsonc'
+    if ((Test-Path -LiteralPath $jsoncSibling) -and -not (Test-Path -LiteralPath $openCodeConfigPath)) {
+        Write-EarlyRefusal -Stage 'config' -Message "Refusing to create opencode.json beside an existing opencode.jsonc. This installer merges strict JSON only: $jsoncSibling"
+    }
+    $agentsPath = ''
+    $agentsSamplePath = ''
+}
+else {
+    try {
+        if ($runningFromPublishDirectory) {
+            if ([string]::IsNullOrWhiteSpace($WorkspacePath)) {
+                Write-EarlyRefusal -Stage 'workspace' -Message 'Running from the publish directory. Pass -WorkspacePath with the target project root.'
+            }
+            $resolvedWorkspace = Resolve-ExistingPath $WorkspacePath
         }
-        $resolvedWorkspace = Resolve-ExistingPath $WorkspacePath
+        elseif ([string]::IsNullOrWhiteSpace($WorkspacePath)) {
+            $resolvedWorkspace = Resolve-ExistingPath $currentDirectory
+        }
+        else {
+            $resolvedWorkspace = Resolve-ExistingPath $WorkspacePath
+        }
     }
-    elseif ([string]::IsNullOrWhiteSpace($WorkspacePath)) {
-        $resolvedWorkspace = Resolve-ExistingPath $currentDirectory
+    catch { Write-EarlyRefusal -Stage 'workspace' -Message $_.Exception.Message }
+    if (-not (Test-IsDirectory $resolvedWorkspace)) {
+        Write-EarlyRefusal -Stage 'workspace' -Message "-WorkspacePath must be a directory, but it is a file: $resolvedWorkspace"
     }
-    else {
-        $resolvedWorkspace = Resolve-ExistingPath $WorkspacePath
-    }
-}
-catch { Write-EarlyRefusal -Stage 'workspace' -Message $_.Exception.Message }
-if (-not (Test-IsDirectory $resolvedWorkspace)) {
-    Write-EarlyRefusal -Stage 'workspace' -Message "-WorkspacePath must be a directory, but it is a file: $resolvedWorkspace"
-}
 
-$openCodeConfigPath = Join-Path $resolvedWorkspace $ConfigName
-$agentsPath = Join-Path $resolvedWorkspace $AgentsName
-$agentsSamplePath = Join-Path $scriptRoot $SampleName
+    $openCodeConfigPath = Join-Path $resolvedWorkspace $ConfigName
+    $agentsPath = Join-Path $resolvedWorkspace $AgentsName
+    $agentsSamplePath = Join-Path $scriptRoot $SampleName
+}
 
 if (Test-Path -LiteralPath $openCodeConfigPath -PathType Container) {
     Write-EarlyRefusal -Stage $ConfigName -Message "The opencode.json target is a directory, not a file: $openCodeConfigPath"
 }
-if (Test-Path -LiteralPath $agentsPath -PathType Container) {
+if (-not $script:ProcessDirectory -and (Test-Path -LiteralPath $agentsPath -PathType Container)) {
     Write-EarlyRefusal -Stage $AgentsName -Message "The AGENTS.md target is a directory, not a file: $agentsPath"
 }
 
@@ -1108,7 +1239,7 @@ if ($configExists) {
 $script:EscapeNonAscii = $false
 if ($null -ne $existingText) { $script:EscapeNonAscii = Copy-NonAsciiEscaping -Text $existingText }
 try {
-    $mergedRoot = Merge-OpenCodeConfig -Root $existingRoot -Exists $configExists -Binary $resolvedBinary -Workspace $resolvedWorkspace -AllowLinks $script:AllowLinks
+    $mergedRoot = Merge-OpenCodeConfig -Root $existingRoot -Exists $configExists -Binary $resolvedBinary -Workspace $resolvedWorkspace -AllowLinks $script:AllowLinks -ProcessDirectory:$script:ProcessDirectory -V2:$script:V2Requested
     # The serialization warning ("truncated as serialization has exceeded the set depth") would be
     # the only stdout line for a machine consumer, which is why the check that follows throws its
     # own message instead of relying on it.
@@ -1133,8 +1264,16 @@ if ($null -ne $existingBytes -and $existingBytes.Length -eq $desiredBytes.Length
 # failure, not a commit failure, so the config must not be touched for it either.
 $agentsPlan = $null
 $agentsPrepareFailure = $null
-try { $agentsPlan = Get-AgentsPlan -TargetPath $agentsPath -SamplePath $agentsSamplePath }
-catch { $agentsPrepareFailure = $_.Exception.Message }
+if ($script:ProcessDirectory) {
+    # A global registration does not own a project AGENTS.md. The session directory is
+    # chosen later by OpenCode, and this config file is not that directory.
+    $agentsPlan = [pscustomobject]@{ Status = 'skipped'; Bytes = $null; Changes = $false }
+    $agentsPrepareFailure = $null
+}
+else {
+    try { $agentsPlan = Get-AgentsPlan -TargetPath $agentsPath -SamplePath $agentsSamplePath }
+    catch { $agentsPrepareFailure = $_.Exception.Message }
+}
 # The commit below runs in a script block so a failed step can leave it early; PowerShell has no
 # labelled break. An assignment inside a script block creates a *local* of that block, so every
 # value the commit reports has to be written through the script scope and copied back afterwards.
@@ -1178,6 +1317,12 @@ else {
         # 4. Commit opencode.json; if that fails, nothing of ours is published.
         if ($configChanges) {
             try {
+                if ($script:ProcessDirectory) {
+                    $configParent = [System.IO.Path]::GetDirectoryName($openCodeConfigPath)
+                    if (-not (Test-Path -LiteralPath $configParent)) {
+                        New-Item -ItemType Directory -Path $configParent -Force | Out-Null
+                    }
+                }
                 if (Test-Path -LiteralPath $openCodeConfigPath) { Clear-ReadOnlyAttribute -Path $openCodeConfigPath }
                 # The backup is taken from inside the write, after the new content exists in the temp
                 # file and before the rename, so a run that never publishes anything cannot leave a
@@ -1319,7 +1464,9 @@ if ($AsJson) {
 else {
     Write-Host 'FilesystemMCP OpenCode install complete.'
     Write-Host "  Binary:        $resolvedBinary"
-    Write-Host "  Workspace:     $resolvedWorkspace"
+    if ($script:ProcessDirectory) { $workspaceLabel = 'OpenCode session directory (passed as the process working directory, not the binary folder)' }
+    else { $workspaceLabel = $resolvedWorkspace }
+    Write-Host "  Workspace:     $workspaceLabel"
     Write-Host "  Config:        $openCodeConfigPath ($configAction)"
     Write-Host "  AGENTS.md:     $agentsStatus ($agentsPath)"
     Write-Host "  Backup:        $(if ([string]::IsNullOrWhiteSpace($backupPath)) { 'none (nothing to preserve)' } else { $backupPath })"

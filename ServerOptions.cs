@@ -12,20 +12,19 @@ internal sealed record ServerOptions(bool AllowSymLinks = true, string? LogDirec
     /// </summary>
     public ResourceBudget Budget { get; init; } = ResourceBudget.Default;
 
-    public static (string Workspace, ServerOptions Options) Parse(string[] args)
-    {
-        if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]) || args[0].StartsWith("--", StringComparison.Ordinal))
-        {
-            throw new ArgumentException("Workspace argument is required.");
-        }
+    public static (string Workspace, ServerOptions Options) Parse(string[] args) =>
+        Parse(args, Directory.GetCurrentDirectory());
 
+    public static (string Workspace, ServerOptions Options) Parse(string[] args, string clientDirectory)
+    {
+        var (workspace, optionArgs) = SelectWorkspace(args, clientDirectory);
         var allow = true;
         string? logDirectory = null;
         var allowSeen = false;
         var logDirectorySeen = false;
         var budget = ResourceBudget.Default;
         var budgetSeen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var arg in args.Skip(1))
+        foreach (var arg in optionArgs)
         {
             if (arg.StartsWith(AllowSymLinksPrefix, StringComparison.Ordinal))
             {
@@ -72,7 +71,36 @@ internal sealed record ServerOptions(bool AllowSymLinks = true, string? LogDirec
         }
 
         budget.Validate();
-        return (args[0], new ServerOptions(allow, logDirectory) { Budget = budget });
+        return (workspace, new ServerOptions(allow, logDirectory) { Budget = budget });
+    }
+
+    /// <summary>
+    /// An explicit first argument is the workspace and wins. When it is omitted, the
+    /// workspace is <paramref name="clientDirectory"/>: the working directory the MCP
+    /// client set while starting this process. OpenCode sets that to the session
+    /// directory (<c>cwd</c> of the stdio child). It is not the directory that contains
+    /// the executable — the binary may be installed anywhere, and using that folder
+    /// would jail every session to the install location.
+    /// </summary>
+    private static (string Workspace, IEnumerable<string> Options) SelectWorkspace(string[] args, string clientDirectory)
+    {
+        if (args.Length > 0 && string.IsNullOrWhiteSpace(args[0]))
+        {
+            throw new ArgumentException("Workspace argument is required.");
+        }
+
+        var hasWorkspaceArgument = args.Length > 0 && !args[0].StartsWith("--", StringComparison.Ordinal);
+        if (hasWorkspaceArgument)
+        {
+            return (args[0], args.Skip(1));
+        }
+
+        if (string.IsNullOrWhiteSpace(clientDirectory))
+        {
+            throw new ArgumentException("Workspace argument is required.");
+        }
+
+        return (clientDirectory, args);
     }
 
     /// <summary>

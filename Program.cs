@@ -24,7 +24,10 @@ internal static class Program
         ResourceLimiter limiter;
         try
         {
-            var (workspace, parsed) = ServerOptions.Parse(args);
+            // The client passes the session directory by setting this process's working
+            // directory before startup. OpenCode does that for every local MCP server.
+            // AppContext.BaseDirectory is the install folder and is never the workspace.
+            var (workspace, parsed) = ServerOptions.Parse(args, Directory.GetCurrentDirectory());
             options = parsed;
             policy = new PathPolicy(workspace, options);
             if (AtomicWritesForHost is not null)

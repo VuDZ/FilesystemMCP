@@ -87,7 +87,7 @@ internal sealed class ServerProcess : IAsyncDisposable
 
     public static async Task<ServerProcess> StartAsync(string workspace, string[]? options = null,
         string? executable = null, bool initialize = true, string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null, bool omitWorkspace = false)
     {
         executable ??= DefaultExecutable;
         var isDll = executable.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
@@ -97,7 +97,14 @@ internal sealed class ServerProcess : IAsyncDisposable
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = Sandbox.Utf8, StandardOutputEncoding = Sandbox.Utf8, StandardErrorEncoding = Sandbox.Utf8
         };
-        if (workingDirectory is not null)
+        if (omitWorkspace)
+        {
+            // The workspace argument is absent, so the server binds the directory the
+            // client set. Tests must set that directory explicitly: the runner's own
+            // working directory is not a sandbox.
+            info.WorkingDirectory = workingDirectory ?? workspace;
+        }
+        else if (workingDirectory is not null)
         {
             info.WorkingDirectory = workingDirectory;
         }
@@ -112,7 +119,11 @@ internal sealed class ServerProcess : IAsyncDisposable
             info.ArgumentList.Add(executable);
         }
 
-        info.ArgumentList.Add(workspace);
+        if (!omitWorkspace)
+        {
+            info.ArgumentList.Add(workspace);
+        }
+
         foreach (var option in options ?? [])
         {
             info.ArgumentList.Add(option);

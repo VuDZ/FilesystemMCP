@@ -30,6 +30,7 @@
     <!-- Local scratch output: the SDK's default glob would otherwise compile it in. -->
     <Compile Remove="../buildwork/**/*.cs" />
     <None Include="../install2opencode.ps1" Link="assets/install2opencode.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../installglobal.ps1" Link="assets/installglobal.ps1" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../AGENTS.md.sample" Link="assets/AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CopyServerForProtocolTests" AfterTargets="Build">

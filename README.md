@@ -1,6 +1,6 @@
 # FilesystemMCP
 
-**Version:** 1.9.0
+**Version:** 1.15.0
 
 [🇺🇸 English](#english-version) | [🇷🇺 Русский](#русская-версия)
 
@@ -32,7 +32,7 @@ The compiled binary will be located in your publish directory (e.g., `bin/Releas
 
 ### Client Configuration (Cursor / OpenCode / RooCode / Claude Desktop)
 Add the compiled executable to your MCP client settings. 
-**CRITICAL:** You MUST pass the target workspace directory as the first CLI argument. Without it, the server will block all file operations.
+**CRITICAL:** Pass the target workspace directory as the first CLI argument when the server should stay pinned to one project. A global OpenCode install omits that argument: OpenCode starts the process with its working directory set to the session, and the server uses that directory. The folder that contains the executable is not a workspace.
 
 **Example for Cursor (Settings -> MCP):**
 - **Name:** `FilesystemMCP`
@@ -105,6 +105,8 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 - The first mutating run writes a byte-exact backup next to the config (`opencode.json.filesystemmcp-backup-*.bak`) and prints its path. A run whose config already matches writes nothing and creates no backup.
 - Both files are prepared first, then written to a temp file and renamed into place. If the second commit fails, the config is restored from the backup and the recovery outcome is reported.
 - `-AllowSymLinks` (default `true`) only shapes the command; direct relative/absolute escapes from the workspace stay rejected in both modes. `-WhatIf` reports without writing, `-AsJson` prints one JSON summary line. The script needs `AGENTS.md.sample` next to it.
+
+`installglobal.ps1` registers the same server once in the user-wide OpenCode config (`%USERPROFILE%\.config\opencode\opencode.json`). The stored command is only the absolute path of the binary, and `cwd` is `.`. OpenCode resolves that against the session directory and passes it as the process working directory. No project path is stored. `-ConfigPath` writes somewhere else; `-V2` selects `mcp.servers` for a fresh OpenCode v2 file. A file that already uses `mcp.servers` is updated in that shape without `-V2`.
 
 ### MCP Tools
 
@@ -202,7 +204,7 @@ Replaces the first exact match of a text snippet in a file using optimistic lock
 
 ## Русская версия
 
-**Версия:** 1.14.0
+**Версия:** 1.15.0
 
 Легковесный MCP-сервер для локальных файловых операций через JSON-RPC 2.0 по `stdio`, написанный на C# .NET 10 Native AOT.
 
@@ -228,7 +230,7 @@ dotnet publish -c Release
 
 ### Настройка клиента (Cursor / OpenCode / RooCode / Claude Desktop)
 Добавь скомпилированный файл в настройки MCP твоего клиента. 
-**КРИТИЧНО:** Ты ОБЯЗАН передать целевую рабочую директорию (workspace) первым аргументом командной строки. Без неё сервер заблокирует любые операции с файлами.
+**КРИТИЧНО:** Для установки в один проект передай целевую рабочую директорию первым аргументом. Глобальная установка OpenCode этот аргумент не пишет: OpenCode запускает процесс с рабочим каталогом сессии, и сервер берёт workspace оттуда. Каталог, в котором лежит исполняемый файл, workspace не является.
 
 **Пример для Cursor (Settings -> MCP):**
 - **Name:** `FilesystemMCP`
@@ -279,6 +281,8 @@ C:\Tools\FilesystemMCP\install2opencode.ps1
 - Первый изменяющий запуск кладёт рядом с config побайтовый backup (`opencode.json.filesystemmcp-backup-*.bak`) и печатает его путь. Запуск, чей config уже совпадает, не пишет ничего и backup не создаёт.
 - Оба файла сначала готовятся, затем пишутся во временный файл и переименовываются на место. Если второй commit сорвался, config восстанавливается из backup, а результат восстановления сообщается.
 - `-AllowSymLinks` (по умолчанию `true`) влияет только на command: прямые absolute/`../` выходы из workspace запрещены в обоих режимах. `-WhatIf` показывает отчёт без записи, `-AsJson` печатает одну JSON-строку. Скрипту нужен `AGENTS.md.sample` рядом с собой.
+
+`installglobal.ps1` один раз прописывает сервер в пользовательский конфиг OpenCode (`%USERPROFILE%\.config\opencode\opencode.json`). В `command` остаётся только абсолютный путь к бинарнику, `cwd` равен `.`. OpenCode считает его от каталога сессии и передаёт процессу как рабочий каталог. Путь проекта не сохраняется. `-ConfigPath` пишет в другой файл; `-V2` выбирает `mcp.servers` для пустого конфига OpenCode v2. Файл, где `mcp.servers` уже есть, обновляется в этой форме и без `-V2`.
 
 ### MCP Инструменты
 
